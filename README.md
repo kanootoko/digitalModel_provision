@@ -291,15 +291,15 @@ Output format:
   }
 ```
 
-:provision_result - float from 0.0 to 5.0
-:intensity, :significance - integer from 1 to 10
-:service_availability - float from 0.0 to 1.0
-:personal_cost, :transport_cost, :walking_cost - integers representing minutes
-:service_type - string, type of service representing city function
-:service_id - integer
-:service_address, :service_name - string
-:service_latitude, :service_longitude - float representing coordinates
-:service_power - integer from 1 to 5
+:provision_result - float from 0.0 to 5.0  
+:intensity, :significance - integer from 1 to 10  
+:service_availability - float from 0.0 to 1.0  
+:personal_cost, :transport_cost, :walking_cost - integers representing minutes  
+:service_type - string, type of service representing city function  
+:service_id - integer  
+:service_address, :service_name - string  
+:service_latitude, :service_longitude - float representing coordinates  
+:service_power - integer from 1 to 5  
 :service_availability_type - string, one of the "walking", "transport" or "car"
 
 ### /api/provision/aggregated
@@ -329,9 +329,10 @@ Output format:
   }
 }
 ```
-:function, :district, :situation, :soc_group - string
-:intensity, :significance - integer from 1 to 10
-:provision - float from 0.0 to 5.0
+
+:function, :district, :situation, :soc_group - string  
+:intensity, :significance - integer from 1 to 10  
+:provision - float from 0.0 to 5.0  
 :time_done - time when aggregation was completed
 
 ### /api/provision/ready/regions
@@ -365,11 +366,11 @@ Output format:
 }
 ```
 
-:function, :res_function - string representing city function. :function can be null in case it was not set in request, otherwise they are the same
-:district, :res_district - string representing district. :district can be null in case it was not set in request, otherwise they are the same
-:soc_group, :res_soc_group - string representing social group. :soc_group can be null in case it was not set in request, otherwise they are the same
+:function, :res_function - string representing city function. :function can be null in case it was not set in request, otherwise they are the same  
+:district, :res_district - string representing district. :district can be null in case it was not set in request, otherwise they are the same  
+:soc_group, :res_soc_group - string representing social group. :soc_group can be null in case it was not set in request, otherwise they are the same  
 :situation, :res_situation - string representing social group. :situation can be null in case it was not set in request, otherwise they are the same
-:provision - float from 0.0 to 5.0
+:provision - float from 0.0 to 5.0  
 
 ### /api/provision/ready/municipalities
 
@@ -399,10 +400,11 @@ Output format:
       "href": "/api/provision/ready/municipalities"
     }
   }
-}```
+}
+```
 
-:function, :res_function - string representing city function. :function can be null in case it was not set in request, otherwise they are the same
-:municipality, :res_municipality - string representing municipality. :municipality can be null in case it was not set in request, otherwise they are the same
-:soc_group, :res_soc_group - string representing social group. :soc_group can be null in case it was not set in request, otherwise they are the same
-:situation, :res_situation - string representing social group. :situation can be null in case it was not set in request, otherwise they are the same
+:function, :res_function - string representing city function. :function can be null in case it was not set in request, otherwise they are the same  
+:municipality, :res_municipality - string representing municipality. :municipality can be null in case it was not set in request, otherwise they are the same  
+:soc_group, :res_soc_group - string representing social group. :soc_group can be null in case it was not set in request, otherwise they are the same  
+:situation, :res_situation - string representing social group. :situation can be null in case it was not set in request, otherwise they are the same  
 :provision - float from 0.0 to 5.0
