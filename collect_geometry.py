@@ -1,7 +1,7 @@
 import json, argparse, psycopg2
 from queue import Empty
 from threading import Thread, Lock
-from typing import Any, Set, Tuple, List, Callable, Optional, Union
+from typing import Any, Dict, Set, Tuple, List, Callable, Optional, Union
 from os import environ
 from multiprocessing import Queue
 import traceback
@@ -12,13 +12,14 @@ import sqlite3
 import os
 
 class Properties:
-    def __init__(self, db_addr: str, db_port: int, db_name: str, db_user: str, db_pass: str, transport_model_api_endpoint: str):
+    def __init__(self, db_addr: str, db_port: int, db_name: str, db_user: str, db_pass: str, transport_model_api_endpoint: str, sqlite3_filename: str):
         self.db_addr = db_addr
         self.db_port = db_port
         self.db_name = db_name
         self.db_user = db_user
         self.db_pass = db_pass
         self.transport_model_api_endpoint = transport_model_api_endpoint
+        self.sqlite3_filename = sqlite3_filename
 
 class Stats:
     def __init__(self, total: int, summary: int):
@@ -66,8 +67,6 @@ class Stats:
 
 properties: Properties
 
-SQLITE3_FILENAME = 'geometry.sqlite3'
-
 def get_walking(lat: float, lan: float, t: int, stats: Stats, timeout=60):
     done_now, errors, current, summary, total = stats.get_all()
     print(f'{time.ctime()}: getting walking   ({lat:<6}, {lan:<6}, {t:2}): {summary:<6} of {total:<6} are done ({done_now:<6} now, {current:<6} current, {errors:<5} errors)')
@@ -78,30 +77,42 @@ def get_walking(lat: float, lan: float, t: int, stats: Stats, timeout=60):
     return data
 
 
-def get_transport(lat: float, lan: float, t: int, stats: Stats, conn: psycopg2.extensions.connection, timeout=180):
+def get_transport(lat: float, lan: float, t: int, stats: Stats, conn: psycopg2.extensions.connection, timeout=240) -> str:
     cur: psycopg2.extensions.cursor = conn.cursor()
-    try:
-        done_now, errors, current, summary, total = stats.get_all()
-        print(f'{time.ctime()}: getting transport ({lat:<6}, {lan:<6}, {t:2}): {summary:<6} of {total:<6} are done ({done_now:<6} now, {current:<6} current, {errors:<5} errors)')
-        data = requests.post(properties.transport_model_api_endpoint, timeout=timeout, json=
-            {
-                'source': [lan, lat],
-                'cost': t * 60,
-                'day_time': 46800,
-                'mode_type': 'pt_cost'
-            }
-        ).json()
+    done_now, errors, current, summary, total = stats.get_all()
+    print(f'{time.ctime()}: getting transport ({lat:<6}, {lan:<6}, {t:2}): {summary:<6} of {total:<6} are done ({done_now:<6} now, {current:<6} current, {errors:<5} errors)')
+    data = requests.post(properties.transport_model_api_endpoint, timeout=timeout, json=
+        {
+            'source': [lan, lat],
+            'cost': t * 60,
+            'day_time': 46800,
+            'mode_type': 'pt_cost'
+        }
+    ).json()
+    if len(data['features']) == 0:
+        data = 'null'
+    else:
         cur.execute('SELECT ST_AsGeoJSON(ST_UNION(ARRAY[' + ',\n'.join(map(lambda x: f'ST_GeomFromGeoJSON(\'{json.dumps(x["geometry"])}\')', data['features'])) + ']))')
         data = cur.fetchall()[0][0]
-    except Exception as ex:
-        if 'ARRAY[]' in str(ex):
-            print(f'Getting transport failed, empty geometry')
-            conn.rollback()
-            data = 'null'
-        else:
-            raise
-    finally:
-        cur.close()
+    return data
+
+def get_cars(lat: float, lan: float, t: int, stats: Stats, conn: psycopg2.extensions.connection, timeout=240) -> str:
+    cur: psycopg2.extensions.cursor = conn.cursor()
+    done_now, errors, current, summary, total = stats.get_all()
+    print(f'{time.ctime()}: getting car ({lat:<6}, {lan:<6}, {t:2}): {summary:<6} of {total:<6} are done ({done_now:<6} now, {current:<6} current, {errors:<5} errors)')
+    data = requests.post(properties.transport_model_api_endpoint, timeout=timeout, json=
+        {
+            'source': [lan, lat],
+            'cost': t * 60,
+            'day_time': 46800,
+            'mode_type': 'car_cost'
+        }
+    ).json()
+    if len(data['features']) == 0:
+        data = 'null'
+    else:
+        cur.execute('SELECT ST_AsGeoJSON(ST_UNION(ARRAY[' + ',\n'.join(map(lambda x: f'ST_GeomFromGeoJSON(\'{json.dumps(x["geometry"])}\')', data['features'])) + ']))')
+        data = cur.fetchall()[0][0]
     return data
 
 
@@ -165,23 +176,25 @@ class ThreadPoolThread(threading.Thread):
 
 
 class SavingThread(threading.Thread):
-    def __init__(self, walking_queue: Queue, transport_queue: Queue): # Queue[Tuple[float, float, int, str]
+    def __init__(self, **kwargs: Queue): # Queue[Tuple[float, float, int, str]
         super().__init__()
-        self.walking_queue = walking_queue
-        self.transport_queue = transport_queue
+        self.queues = kwargs
         self._stopping = False
 
     def run(self):
-        with sqlite3.connect(SQLITE3_FILENAME) as conn_sl3:
+        walking_queue = self.queues['walking']
+        transport_queue = self.queues['transport']
+        car_queue = self.queues['car']
+        with sqlite3.connect(properties.sqlite3_filename) as conn_sl3:
             cur_sl3 = conn_sl3.cursor()
             while not self._stopping:
                 try:
                     res = []
-                    res.append(self.walking_queue.get(timeout=5))
-                    l = self.walking_queue.qsize()
+                    res.append(walking_queue.get(timeout=5))
+                    l = walking_queue.qsize()
                     try:
                         while len(res) < max(15, l):
-                            res.append(self.walking_queue.get(timeout=5))
+                            res.append(walking_queue.get(timeout=5))
                     except Empty:
                         pass
                     for lat, lan, t, geometry in res:
@@ -195,11 +208,11 @@ class SavingThread(threading.Thread):
                 print('Done saving walking, now transport')
                 try:
                     res = []
-                    res.append(self.transport_queue.get(timeout=5))
-                    l = self.transport_queue.qsize()
+                    res.append(transport_queue.get(timeout=5))
+                    l = transport_queue.qsize()
                     try:
                         while len(res) < max(15, l):
-                            res.append(self.transport_queue.get(timeout=5))
+                            res.append(transport_queue.get(timeout=5))
                     except Empty:
                         pass
                     for lat, lan, t, geometry in res:
@@ -210,18 +223,31 @@ class SavingThread(threading.Thread):
                             print(f"insert into transport (latitude, longitude, time, geometry) values ({lat:<6}, {lan:<6}, {t:2}, '...') FAILED")
                 except Empty:
                     pass
-                print('Done saving transport, commiting')
+                print('Done saving transport, now car')
+                try:
+                    res = []
+                    res.append(car_queue.get(timeout=5))
+                    l = car_queue.qsize()
+                    try:
+                        while len(res) < max(15, l):
+                            res.append(car_queue.get(timeout=5))
+                    except Empty:
+                        pass
+                    for lat, lan, t, geometry in res:
+                        try:
+                            cur_sl3.execute(f"insert into car (latitude, longitude, time, geometry) values ({lat}, {lan}, {t}, '{geometry}')")
+                            print(f"insert into car (latitude, longitude, time, geometry) values ({lat:<6}, {lan:<6}, {t:2}, '...')")
+                        except sqlite3.IntegrityError:
+                            print(f"insert into car (latitude, longitude, time, geometry) values ({lat:<6}, {lan:<6}, {t:2}, '...') FAILED")
+                except Empty:
+                    pass
                 conn_sl3.commit()
-        try:
-            while True:
-                self.walking_queue.get_nowait()
-        except Empty:
-            pass
-        try:
-            while True:
-                self.transport_queue.get_nowait()
-        except Empty:
-            pass
+        for q in self.queues.values():
+            try:
+                while True:
+                    q.get_nowait()
+            except Empty:
+                pass
         print(f'{time.ctime()}: Saving is finished')
 
     def stop(self):
@@ -262,7 +288,7 @@ class ThreadPool:
                 self.results_queue.get_nowait()
         except Empty:
             pass
-    
+            
     def join(self):
         for thread in self.threads:
             thread.join()
@@ -284,9 +310,15 @@ class WalkingThread(threading.Thread):
         start_time = time.time()
         done: Set[Tuple[float, float, int]] = set()
 
-        with sqlite3.connect(SQLITE3_FILENAME) as conn_sl3:
-            cur_sl3 = conn_sl3.cursor()
-            done = set(cur_sl3.execute('select latitude, longitude, time from walking').fetchall())
+        ok = False
+        while not ok:
+            try:
+                with sqlite3.connect(properties.sqlite3_filename) as conn_sl3:
+                    cur_sl3 = conn_sl3.cursor()
+                    done = set(cur_sl3.execute('select latitude, longitude, time from walking').fetchall())
+                    ok = True
+            except Exception:
+                pass
 
         stats = Stats(len(self.houses) * len(self.times), len(done))
         print(f'Starting walking  : #houses = {len(self.houses)}, times = {self.times}, (ready: {len(done)})')
@@ -326,9 +358,17 @@ class TransportThread(threading.Thread):
     def run(self):
         start_time = time.time()
         done: Set[Tuple[float, float, int]] = set()
-        with sqlite3.connect(SQLITE3_FILENAME) as conn_sl3:
-            cur_sl3 = conn_sl3.cursor()
-            done = set(cur_sl3.execute('select latitude, longitude, time from transport').fetchall())
+        
+        ok = False
+        while not ok:
+            try:
+                with sqlite3.connect(properties.sqlite3_filename) as conn_sl3:
+                    cur_sl3 = conn_sl3.cursor()
+                    done = set(cur_sl3.execute('select latitude, longitude, time from transport').fetchall())
+                    ok = True
+            except Exception:
+                pass
+
         with psycopg2.connect(f'host={properties.db_addr} port={properties.db_port} dbname={properties.db_name}'
                 f' user={properties.db_user} password={properties.db_pass}') as conn:
 
@@ -358,13 +398,66 @@ class TransportThread(threading.Thread):
     def stop(self):
         self._stopping = True
 
+class CarThread(threading.Thread):
+    def __init__(self, houses: List[Tuple[float, float]], times: List[int], result_queue: Queue, threads: int = 1):
+        super().__init__()
+        self.houses = houses
+        self.times = times
+        self.result_queue = result_queue
+        self._stopping = False
+        self.threads = threads
+
+    def run(self):
+        start_time = time.time()
+        done: Set[Tuple[float, float, int]] = set()
+        
+        ok = False
+        while not ok:
+            try:
+                with sqlite3.connect(properties.sqlite3_filename) as conn_sl3:
+                    cur_sl3 = conn_sl3.cursor()
+                    done = set(cur_sl3.execute('select latitude, longitude, time from car').fetchall())
+                    ok = True
+            except Exception:
+                pass
+            
+        with psycopg2.connect(f'host={properties.db_addr} port={properties.db_port} dbname={properties.db_name}'
+                f' user={properties.db_user} password={properties.db_pass}') as conn:
+
+            stats = Stats(len(self.houses) * len(self.times), len(done))
+            print(f'Starting car: #houses = {len(self.houses)}, times = {self.times} (ready: {len(done)})')
+            thread_pool = ThreadPool(self.threads, self.result_queue, done, stats, conn=conn)
+            thread_pool.start()
+            for t in self.times:
+                if self._stopping:
+                    break
+                for lat, lan in self.houses:
+                    if self._stopping:
+                        break
+                    if (lat, lan, t) in done:
+                        stats.inc_current()
+                        continue
+                    thread_pool.add(get_cars, lat, lan, t)
+            while thread_pool.is_alive():
+                time.sleep(10)
+                if self._stopping:
+                    print('Stopping car')
+                    thread_pool.stop()
+                    thread_pool.join()
+                    break
+        print(f'{time.ctime()}: car is done: {stats.get_done()} in {time.time() - start_time:5.3f} seconds. {stats.get_errors()} errors')
+
+    def stop(self):
+        self._stopping = True
+
 if __name__ == '__main__':
     
     # Default properties settings
 
-    properties = Properties('localhost', 5432, 'citydb', 'postgres', 'postgres', 'http://10.32.1.61:8080/api.v2/isochrones')
+    properties = Properties('localhost', 5432, 'citydb', 'postgres', 'postgres', 'http://10.32.1.61:8080/api.v2/isochrones', 'geometry.sqlite')
     transport_threads = 1
     walking_threads = 1
+    car_threads = 1
 
     # CLI Arguments
 
@@ -384,8 +477,12 @@ if __name__ == '__main__':
                         help=f'number of threads to request walking geometry [default: {walking_threads}]', type=int)
     parser.add_argument('-t', '--transport_threads', action='store', dest='transport_threads',
                         help=f'number of threads to request transport geometry [default: {transport_threads}]', type=int)
+    parser.add_argument('-c', '--car_threads', action='store', dest='car_threads',
+                        help=f'number of threads to request car geometry [default: {car_threads}]', type=int)
     parser.add_argument('-T', '--transport_model_api', action='store', dest='transport_model_api',
                         help=f'url of endpoint of transport model [default: {properties.transport_model_api_endpoint}]', type=str)
+    parser.add_argument('-f', '--sqlite_file', action='store', dest='sqlite_file',
+                        help=f'path to sqlite database [default: {properties.sqlite3_filename}]', type=str)
     args = parser.parse_args()
 
     if args.db_addr is not None:
@@ -398,10 +495,14 @@ if __name__ == '__main__':
         properties.db_user = args.db_user
     if args.db_pass is not None:
         properties.db_pass = args.db_pass
+    if args.sqlite_file is not None:
+        properties.sqlite3_filename = args.sqlite_file
     if args.walking_threads is not None:
         walking_threads = args.walking_threads
     if args.transport_threads is not None:
         transport_threads = args.transport_threads
+    if args.car_threads is not None:
+        car_threads = args.car_threads
     
     with psycopg2.connect(f'host={properties.db_addr} port={properties.db_port} dbname={properties.db_name}'
             f' user={properties.db_user} password={properties.db_pass}') as conn:
@@ -413,60 +514,65 @@ if __name__ == '__main__':
         cur.execute('select public_transport from needs group by public_transport order by 1')
         public_transport_time = list(filter(lambda x: x != 0, map(lambda y: y[0], cur.fetchall())))
 
+        cur.execute('select personal_transport from needs group by personal_transport order by 1')
+        car_time = list(filter(lambda x: x != 0, map(lambda y: y[0], cur.fetchall())))
+
         cur.execute(f'SELECT distinct ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float, ROUND(ST_Y(ST_Centroid(geometry))::numeric, 3)::float FROM houses')
         houses: List[Tuple[float, float]] = list(map(lambda x: (x[0], x[1]), cur.fetchall()))
 
-    if not os.path.isfile(SQLITE3_FILENAME):
-        with open(SQLITE3_FILENAME, 'wb'):
+    if not os.path.isfile(properties.sqlite3_filename):
+        with open(properties.sqlite3_filename, 'wb'):
             pass
 
-    with sqlite3.connect(SQLITE3_FILENAME) as conn_sl3:
+    with sqlite3.connect(properties.sqlite3_filename) as conn_sl3:
         cur_sl3 = conn_sl3.cursor()
-        cur_sl3.execute(
-            'create table if not exists walking ('
-            '   latitude float not null,'
-            '   longitude float not null,'
-            '   time int not null,'
-            '   geometry varchar,'
-            '   primary key(latitude, longitude, time)'
-            ')'
-        )
-        cur_sl3.execute(
-            'create table if not exists transport ('
-            '   latitude float not null,'
-            '   longitude float not null,'
-            '   time int not null,'
-            '   geometry varchar,'
-            '   primary key(latitude, longitude, time)'
-            ')'
-        )
+        for table_name in ('walking', 'transport', 'car'):
+            cur_sl3.execute(
+                f'create table if not exists {table_name} ('
+                '   latitude float not null,'
+                '   longitude float not null,'
+                '   time int not null,'
+                '   geometry varchar,'
+                '   primary key(latitude, longitude, time)'
+                ')'
+            )
+        conn_sl3.commit()
 
     print(f'Using postgres connection: {properties.db_user}@{properties.db_addr}:{properties.db_port}/{properties.db_name}')
 
-    saving = SavingThread(Queue(), Queue())
+    saving = SavingThread(walking=Queue(), transport=Queue(), car=Queue())
     saving.start()
 
-    walking = WalkingThread(houses, walking_time, saving.walking_queue, walking_threads)
-    transport = TransportThread(houses, public_transport_time, saving.transport_queue, transport_threads)
+    walking = None
+    transport = None
+    car = None
+
+    if walking_threads != 0:
+        walking = WalkingThread(houses, walking_time, saving.queues['walking'], walking_threads)
+    if transport_threads != 0:
+        transport = TransportThread(houses, public_transport_time, saving.queues['transport'], transport_threads)
+    if car_threads != 0:
+        car = CarThread(houses, car_time, saving.queues['car'], car_threads)
 
     try:
-        walking.start()
-        transport.start()
+        if walking is not None != 0:
+            walking.start()
+        if transport is not None != 0:
+            transport.start()
+        if car is not None != 0:
+            car.start()
         
-        walking.join()
-        transport.join()
+        if walking is not None != 0:
+            walking.join()
+        if transport is not None != 0:
+            transport.join()
+        if car is not None != 0:
+            car.join()
     except:
         print('Stopping threads')
-        if walking.is_alive():
-            walking.stop()
-        if transport.is_alive():
-            transport.stop()
-        if saving.is_alive():
-            saving.stop()
-
-        if walking.is_alive():
-            walking.join()
-        if transport.is_alive():
-            transport.join()
-        if saving.is_alive():
-            saving.join()
+        for thread in (walking, transport, car, saving):
+            if thread is not None and thread.is_alive():
+                thread.stop() # type: ignore
+        for thread in (walking, transport, car, saving):
+            if thread is not None and thread.is_alive():
+                thread.join()

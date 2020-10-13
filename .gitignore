@@ -1,0 +1,7 @@
+*.json
+*.sql
+*.doc*
+__pycache__
+*.sqlite3*
+tmp
+*.backup
