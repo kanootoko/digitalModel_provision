@@ -365,7 +365,7 @@ def compute_atomic_provision(conn_houses: psycopg2.extensions.connection, conn_p
             target_O = 5 - ((5 - target_S / 6) ** (b + 1)) / 5 ** b
 
     target_O = round(target_O, 2)
-    print(f'Обеспеченность социальной группы ({soc_group}) функцией ({function}) в ситуации ({situation}) в точке ({coords[0]:.3f}, {coords[1]:.3f}): {target_O}')
+    # print(f'Обеспеченность социальной группы ({soc_group}) функцией ({function}) в ситуации ({situation}) в точке ({coords[0]:.3f}, {coords[1]:.3f}): {target_O}')
 
     if use_database:
         cur_provision.execute('SELECT id from atomic WHERE latitude = %s AND longitude = %s AND walking = %s AND transport = %s AND intensity = %s AND significance = %s',
@@ -435,29 +435,28 @@ def get_aggregation(conn_provision: psycopg2.extensions.connection, conn_houses:
                 ' AND city_function_id = (SELECT id from city_functions where name = %s)'
                 f' AND {where_column}_id = (SELECT id from {where_type} where full_name = %s)',
                 (soc_group, situation, function, where))
+        cur_data = cur_provision.fetchall()
+        if len(cur_data) != 0:
+            id, intensity, significance, provision, done =  cur_data[0]
+            if not update:
+                return {
+                    'provision': provision,
+                    'intensity': intensity,
+                    'significance': significance,
+                    'time_done': done
+                }
+            else:
+                found_id = id
+        del cur_data
     elif where_type == 'total':
         raise Exception('This method is not available for now')
-    else:
-        cur_provision.execute('SELECT id, avg_intensity, avg_significance, avg_provision, time_done FROM aggregation_house'
-                ' WHERE social_group_id = (SELECT id from social_groups where name = %s)'
-                ' AND living_situation_id = (SELECT id from living_situations where name = %s)'
-                ' AND city_function_id = (SELECT id from city_functions where name = %s)'
-                ' AND latitude = %s and longitude = %s',
-                (soc_group, situation, function, where[0], where[1]))
-
-    cur_data = cur_provision.fetchall()
-    if len(cur_data) != 0:
-        id, intensity, significance, provision, done =  cur_data[0]
-        if not update:
-            return {
-                'provision': provision,
-                'intensity': intensity,
-                'significance': significance,
-                'time_done': done
-            }
-        else:
-            found_id = id
-    del cur_data
+    # else:
+    #     cur_provision.execute('SELECT id, avg_intensity, avg_significance, avg_provision, time_done FROM aggregation_house'
+    #             ' WHERE social_group_id = (SELECT id from social_groups where name = %s)'
+    #             ' AND living_situation_id = (SELECT id from living_situations where name = %s)'
+    #             ' AND city_function_id = (SELECT id from city_functions where name = %s)'
+    #             ' AND latitude = %s and longitude = %s',
+    #             (soc_group, situation, function, where[0], where[1]))
         
     if soc_group is None:
         soc_groups = social_groups
@@ -536,22 +535,22 @@ def get_aggregation(conn_provision: psycopg2.extensions.connection, conn_houses:
         if len(soc_groups) != 1:
             if len(res) != 0 and res[0][0] is not None:
                 cnt_functions = res[0][0]
-                provision = 0
-                intensity = 0
-                significance = 0
-                for soc_group in soc_groups:
+                provision_group = 0
+                intensity_group = 0
+                significance_group = 0
+                for soc_group in groups_provision.keys():
                     cur_houses.execute('SELECT ss.number FROM social_structure ss'
                             ' INNER JOIN social_groups sg on ss.social_group_id = sg.id'
                             ' WHERE house_id in (SELECT id FROM houses WHERE ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float = %s'
                             ' AND ROUND(ST_Y(ST_Centroid(geometry))::numeric, 3)::float = %s) AND sg.name = %s union select 0', (house[0], house[1], soc_group))
                     number = cur_houses.fetchall()[0][0]
-                    provision += groups_provision[soc_group][0] * number / cnt_functions
-                    intensity += groups_provision[soc_group][1] * number / cnt_functions
-                    significance += groups_provision[soc_group][2] * number / cnt_functions
+                    provision_group += groups_provision[soc_group][0] * number / cnt_functions
+                    intensity_group += groups_provision[soc_group][1] * number / cnt_functions
+                    significance_group += groups_provision[soc_group][2] * number / cnt_functions
             else:
-                provision = sum(map(lambda x: x[0], groups_provision.values())) / cnt_groups
-                intensity = sum(map(lambda x: x[1], groups_provision.values())) / cnt_groups
-                significance = sum(map(lambda x: x[2], groups_provision.values())) / cnt_groups
+                provision_group = sum(map(lambda x: x[0], groups_provision.values())) / cnt_groups
+                intensity_group = sum(map(lambda x: x[1], groups_provision.values())) / cnt_groups
+                significance_group = sum(map(lambda x: x[2], groups_provision.values())) / cnt_groups
         elif cnt_groups != 0:
             provision_group /= cnt_groups
             intensity_group /= cnt_groups
@@ -574,19 +573,20 @@ def get_aggregation(conn_provision: psycopg2.extensions.connection, conn_houses:
             cur_provision.execute(f'INSERT INTO aggregation_{where_column} (social_group_id, living_situation_id, city_function_id, {where_column}_id, avg_intensity, avg_significance, avg_provision, time_done)'
                     ' VALUES ((SELECT id from social_groups where name = %s), (SELECT id from living_situations where name = %s), (SELECT id from city_functions where name = %s),'
                     f' (SELECT id from {where_type} where full_name = %s), %s, %s, %s, %s)',
-                    (soc_group, situation, function, where, intensity_houses, significance_houses, provision_houses, done_time))
+                    (soc_groups[0] if len(soc_groups) == 1 else None, situations[0] if len(situations) == 1 else None, functions[0] if len(functions) == 1 else None,
+                            where, intensity_houses, significance_houses, provision_houses, done_time))
         else:
             cur_provision.provision.execute(f'UPDATE aggregation_{where_column} SET avg_intensity = %s, avg_significance = %s, avg_provision = %s, time_done = %s WHERE id = %s',
                     (intensity_houses, significance_houses, provision_houses, done_time, found_id))
-    else:
-        if found_id is None:
-            cur_provision.execute('INSERT INTO aggregation_house (social_group_id, living_situation_id, city_function_id, latitude, longitude, avg_intensity, avg_significance, avg_provision, time_done)'
-                    'VALUES ((SELECT id from social_groups where name = %s), (SELECT id from living_situations where name = %s), (SELECT id from city_functions where name = %s),'
-                    ' %s, %s, %s, %s, %s)',
-                    (soc_group, situation, function, *where, intensity_houses, significance_houses, provision_houses, done_time))
-        else:
-            cur_provision.execute('UPDATE aggregation_house SET intensity = %s, avg_significance = %s, avg_provision = %s, time_done = %s WHERE id = %s', 
-                    (intensity_houses, significance_houses, provision_houses, done_time, found_id))
+    # else:
+    #     if found_id is None:
+    #         cur_provision.execute('INSERT INTO aggregation_house (social_group_id, living_situation_id, city_function_id, latitude, longitude, avg_intensity, avg_significance, avg_provision, time_done)'
+    #                 'VALUES ((SELECT id from social_groups where name = %s), (SELECT id from living_situations where name = %s), (SELECT id from city_functions where name = %s),'
+    #                 ' %s, %s, %s, %s, %s)',
+    #                 (soc_group, situation, function, *where, intensity_houses, significance_houses, provision_houses, done_time))
+    #     else:
+    #         cur_provision.execute('UPDATE aggregation_house SET intensity = %s, avg_significance = %s, avg_provision = %s, time_done = %s WHERE id = %s', 
+    #                 (intensity_houses, significance_houses, provision_houses, done_time, found_id))
     conn_provision.commit()
     return {
         'provision': provision_houses,
@@ -619,12 +619,14 @@ def update_all_aggregations() -> None:
             for soc_group in social_groups + [None]: # type: ignore
                 for function in city_functions + [None]: # type: ignore
                     intensity = values_table.get((soc_group, function), 0.0)
-                    if intensity == 0:
+                    if intensity == 0 and soc_group is not None and function is not None:
                         continue
                     for situation in living_situations + [None]: # type: ignore
                         try:
                             walking_time_cost, transport_time_cost, _, _ = needs_table.get((soc_group, situation, function), (0, 0, 0, 0))
-                            if walking_time_cost == 0 and transport_time_cost == 0:
+                            if walking_time_cost == 0 and transport_time_cost == 0 and \
+                                    soc_group is not None and function is not None and \
+                                    intensity is not None and situation is not None:
                                 continue
                             for district in districts:
                                 aggregate_district(conn_provision, conn_houses, district, soc_group, situation, function)
@@ -633,6 +635,7 @@ def update_all_aggregations() -> None:
                         except Exception as ex:
                             traceback.print_exc()
                             print(f'Exception occured! {ex}')
+                            conn_provision.rollback()
                             time.sleep(2)
         finally:
             print(f'Finished updating all agregations in {time.time() - full_start:.2f} seconds')
@@ -645,12 +648,14 @@ def update_aggregation_district(district: str, including_municipalities: bool = 
             for soc_group in social_groups + [None]: # type: ignore
                 for function in city_functions + [None]: # type: ignore
                     intensity = values_table.get((soc_group, function), 0.0)
-                    if intensity == 0:
+                    if intensity == 0 and soc_group is not None and function is not None:
                         continue
                     # p = multiprocessing.Pool(os.cpu_count() // 2) # type: ignore
                     for situation in living_situations + [None]: # type: ignore
                         walking_time_cost, transport_time_cost, _, _ = needs_table.get((soc_group, situation, function), (0, 0, 0, 0))
-                        if walking_time_cost == 0 and transport_time_cost == 0:
+                        if walking_time_cost == 0 and transport_time_cost == 0 and \
+                                soc_group is not None and function is not None and \
+                                intensity is not None and situation is not None:
                             continue
                         try:
                             aggregate_district(conn_provision, conn_houses, district, soc_group, situation, function)
@@ -671,6 +676,45 @@ def update_aggregation_district(district: str, including_municipalities: bool = 
         finally:
             print(f'Finished updating all agregations in {time.time() - full_start:.2f} seconds')
 
+def update_global_data() -> None:
+    global social_groups
+    global living_situations
+    global municipalities
+    global districts
+    global needs_table
+    global values_table
+    global all_houses
+    with psycopg2.connect(properties.houses_conn_string()) as conn:
+        cur: psycopg2.extensions.cursor = conn.cursor()
+
+        cur.execute('SELECT name FROM social_groups')
+        social_groups = list(map(lambda x: x[0], cur.fetchall()))
+        
+        # cur.execute('SELECT name FROM city_functions')
+        # city_functions = list(map(lambda x: x[0], cur.fetchall()))
+
+        cur.execute('SELECT name FROM living_situations')
+        living_situations = list(map(lambda x: x[0], cur.fetchall()))
+
+        cur.execute('SELECT full_name FROM municipalities')
+        municipalities = list(map(lambda x: x[0], cur.fetchall()))
+
+        cur.execute('SELECT full_name FROM districts')
+        districts = list(map(lambda x: x[0], cur.fetchall()))
+
+        needs_table = dict()
+        cur.execute(database_needs_sql)
+        for soc_group, situation, function, walking, transport, car, intensity in cur.fetchall():
+            needs_table[(soc_group, situation, function)] = (walking, transport, car, intensity)
+
+        values_table = dict()
+        cur.execute(database_significance_sql)
+        for soc_group, city_function, significance in cur.fetchall():
+            values_table[(soc_group, city_function)] = significance
+
+        cur.execute('SELECT DISTINCT dist.full_name, muni.full_name, ROUND(ST_X(ST_Centroid(h.geometry))::numeric, 3)::float as latitude, ROUND(ST_Y(ST_Centroid(h.geometry))::numeric, 3)::float as longitude FROM houses h inner join districts dist on dist.id = h.district_id inner join municipalities muni on muni.id = h.municipal_id')
+        all_houses = pd.DataFrame(cur.fetchall(), columns=('district', 'municipality', 'latitude', 'longitude'))
+
 compress = Compress()
 
 app = Flask(__name__)
@@ -680,6 +724,11 @@ compress.init_app(app)
 def after_request(response) -> Response:
     response.headers['Access-Control-Allow-Origin'] = '*'
     return response
+
+@app.route('/api/reload_data', methods=['POST'])
+def reload_data() -> Response:
+    update_global_data()
+    return make_response('OK')
 
 # Расчет обеспеченности для атомарной ситуации: обеспеченность одной социальной группы в одной жизненной ситуации
 # одной городской функцией, относительно одного жилого дома.
@@ -723,7 +772,7 @@ def aggregated_provision() -> Response:
     municipality: Optional[str] = request.args.get('municipality', None, type=str)
     house: Optional[Tuple[float, float]]
     if 'house' in request.args:
-        house = tuple(map(float, request.args.get('house', type=str).split())) # type: ignore
+        house = tuple(map(float, request.args.get('house', type=str).split(','))) # type: ignore
     else:
         house = None
     if not ((soc_group is None or soc_group in social_groups)
@@ -924,7 +973,7 @@ def list_municipalities() -> Response:
 @app.route('/api', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2020-10-13',
+        'version': '2020-10-15',
         '_links': {
             'self': {
                 'href': request.path
@@ -958,11 +1007,11 @@ def api_help() -> Response:
                 'href': '/api/list/municipalities'
             },
             'ready_aggregations_regions': {
-                'href': '/api/provision/regions{?soc_group,situation,function,region}',
+                'href': '/api/provision/ready/regions{?soc_group,situation,function,region}',
                 'templated': True
             },
             'ready_aggregations_municipalities': {
-                'href': '/api/provision/municipalities{?soc_group,situation,function,municipality}',
+                'href': '/api/provision/ready/municipalities{?soc_group,situation,function,municipality}',
                 'templated': True
             }
         }
@@ -1070,37 +1119,7 @@ if __name__ == '__main__':
     if args.skip_aggregation:
         skip_aggregation = True
     
-    with psycopg2.connect(properties.houses_conn_string()) as conn:
-        cur: psycopg2.extensions.cursor = conn.cursor()
-
-        cur.execute('SELECT name FROM social_groups')
-        social_groups = list(map(lambda x: x[0], cur.fetchall()))
-        
-        # cur.execute('SELECT name FROM city_functions')
-        # city_functions = list(map(lambda x: x[0], cur.fetchall()))
-
-        cur.execute('SELECT name FROM living_situations')
-        living_situations = list(map(lambda x: x[0], cur.fetchall()))
-
-        cur.execute('SELECT full_name FROM municipalities')
-        municipalities = list(map(lambda x: x[0], cur.fetchall()))
-
-        cur.execute('SELECT full_name FROM districts')
-        districts = list(map(lambda x: x[0], cur.fetchall()))
-
-        needs_table = dict()
-        cur.execute(database_needs_sql)
-        for soc_group, situation, function, walking, transport, car, intensity in cur.fetchall():
-            needs_table[(soc_group, situation, function)] = (walking, transport, car, intensity)
-
-        values_table = dict()
-        cur.execute(database_significance_sql)
-        for soc_group, city_function, significance in cur.fetchall():
-            values_table[(soc_group, city_function)] = significance
-
-
-        cur.execute('SELECT DISTINCT dist.full_name, muni.full_name, ROUND(ST_X(ST_Centroid(h.geometry))::numeric, 3)::float as latitude, ROUND(ST_Y(ST_Centroid(h.geometry))::numeric, 3)::float as longitude FROM houses h inner join districts dist on dist.id = h.district_id inner join municipalities muni on muni.id = h.municipal_id')
-        all_houses = pd.DataFrame(cur.fetchall(), columns=('district', 'municipality', 'latitude', 'longitude'))
+    update_global_data()
 
     avaliability = Avaliability()
 

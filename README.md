@@ -45,13 +45,13 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -T,--transport_model_endpoint \<str\>
 * -S,--skip_aggregation - skip_evaluation
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2020-10-13)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2020-10-15)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2020-10-13 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2020-10-15 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2020-10-13`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2020-10-13`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2020-10-15`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2020-10-15`  
       Ensure that:
         1. _/etc/postgresql/12/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/12/main/pg_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
@@ -73,7 +73,7 @@ At this moment there are endpoints:
   `function` for city function, `situation` for living situation and `point` for coordinates of the house.
   Point format is `latitude,longitude`.
 * **/api/provision/aggregated**: returns the aggregated provision value. Takes parameters by query. You should set at least something in: `soc_group` for social group,
-  `function` for city function, `situation` for living situation and `region` for district and `municipality` for municipality.
+  `function` for city function, `situation` for living situation, `region` for district,`municipality` for municipality and `house` for house (format: latitude,longitude).
 * **/api/provision/ready/regions**: returns the list of already aggregated by districts provision values.
   Takes parameters by query. You can set `soc_group`, `function`, `situation` or `district` parameter to specify the request.
 * **/api/provision/ready/municipalities**: returns the list of already aggregated by municipalities provision values.
