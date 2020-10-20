@@ -72,11 +72,13 @@ At this moment there are endpoints:
   and services inside of them. Takes parameters by query. You must set `soc_group` for social group,
   `function` for city function, `situation` for living situation and `point` for coordinates of the house.
     Point format is `latitude,longitude`.  
-    Also you can set some of the calculation parameters by setting values: _walking_time_cost_, _transport_time_cost_, _personal_transport_time_cost_,
-  _walking_availability_, _public_transport_availability_multiplier_, _personal_transport_availability_multiplier_, _max_target_s_,
-  _target_s_divider_, _coeff_multiplier_.
+    Also you can set some of the calculation parameters by setting values: *walking_time_cost*, *transport_time_cost*, *personal_transport_time_cost*,
+  *walking_availability*, *significance*, *intensity*, *public_transport_availability_multiplier*, *personal_transport_availability_multiplier*, *max_target_s*,
+  *target_s_divider*, *coeff_multiplier*.
 * **/api/provision/aggregated**: returns the aggregated provision value. Takes parameters by query. You should set at least something in: `soc_group` for social group,
   `function` for city function, `situation` for living situation, `region` for district,`municipality` for municipality and `house` for house (format: latitude,longitude).
+* **/api/provision/ready/regions**: returns the list of already aggregated by houses provision values.
+  Takes parameters by query. You can set `soc_group`, `function`, `situation` or `house` parameter to specify the request. house format is latitude,longitude
 * **/api/provision/ready/regions**: returns the list of already aggregated by districts provision values.
   Takes parameters by query. You can set `soc_group`, `function`, `situation` or `district` parameter to specify the request.
 * **/api/provision/ready/municipalities**: returns the list of already aggregated by municipalities provision values.

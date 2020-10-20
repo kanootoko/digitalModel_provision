@@ -257,6 +257,10 @@ def compute_atomic_provision(conn_houses: psycopg2.extensions.connection, conn_p
         transport_time_cost = int(kwargs['transport_time_cost'])
     if 'personal_transport_time_cost' in kwargs:
         personal_transport_time_cost = int(kwargs['personal_transport_time_cost'])
+    if 'intensity' in kwargs:
+        intensity = int(kwargs['intensity'])
+    if 'significance' in kwargs:
+        significance = int(kwargs['significance'])
     walking_availability = float(kwargs.get('walking_availability', 1))
     public_transport_availability_multiplier = float(kwargs.get('public_transport_availability_multiplier', 1))
     personal_transport_availability_multiplier = float(kwargs.get('personal_transport_availability_multiplier', 0))
@@ -955,11 +959,11 @@ def list_social_groups() -> Response:
             cur.execute('SELECT f.name, s.name, significance FROM values v'
                 ' JOIN social_groups s ON v.social_group_id = s.id'
                 ' JOIN city_functions f ON v.city_function_id = f.id'
-                ' WHERE s.name = %s AND significance > 0',
+                ' WHERE f.name = %s AND significance > 0',
                 (request.args['function'],))
             res = list(map(lambda y: y[1], filter(lambda x: len(function_service[x[0]]) != 0, cur.fetchall())))
     else:
-        res = city_functions
+        res = social_groups
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
