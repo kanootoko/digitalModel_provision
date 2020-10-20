@@ -194,7 +194,6 @@ database_significance_sql = '''select gr.name as social_group_name, fun.name as 
 	inner join city_functions fun on val.city_function_id = fun.id'''
 
 social_groups: List[str]
-# city_functions: List[str]
 living_situations: List[str]
 municipalities: List[str]
 districts: List[str]
@@ -237,7 +236,8 @@ function_service: Dict[str, Tuple[Optional[Tuple[str, str]], ...]] = {
 city_functions: List[str] = list(map(lambda x: x[0], filter(lambda x: len(x[1]) != 0, function_service.items())))
 
 def compute_atomic_provision(conn_houses: psycopg2.extensions.connection, conn_provision: psycopg2.extensions.connection,
-        soc_group: str, situation: str, function: str, coords: Tuple[float, float], use_database: Optional[bool] = False) -> Dict[str, Any]:
+        soc_group: str, situation: str, function: str, coords: Tuple[float, float], use_database: Optional[bool] = False,
+        **kwargs) -> Dict[str, Any]:
     cur_houses: psycopg2.excensions.cursor = conn_houses.cursor()
     cur_provision: psycopg2.excensions.cursor = conn_provision.cursor()
 
@@ -248,26 +248,39 @@ def compute_atomic_provision(conn_houses: psycopg2.extensions.connection, conn_p
         print(f'No data found for values (soc_group = {soc_group}, function = {function})')
         raise Exception(f'No data found for values (soc_group = {soc_group}, function = {function})')
 
-    walking_time_cost, transport_time_cost, personal_transport_cost, intensity = needs_table[(soc_group, situation, function)]
+    walking_time_cost, transport_time_cost, personal_transport_time_cost, intensity = needs_table[(soc_group, situation, function)]
     significance = values_table[(soc_group, function)]
+
+    if 'walking_time_cost' in kwargs:
+        walking_time_cost = int(kwargs['walking_time_cost'])
+    if 'transport_time_cost' in kwargs:
+        transport_time_cost = int(kwargs['transport_time_cost'])
+    if 'personal_transport_time_cost' in kwargs:
+        personal_transport_time_cost = int(kwargs['personal_transport_time_cost'])
+    walking_availability = float(kwargs.get('walking_availability', 1))
+    public_transport_availability_multiplier = float(kwargs.get('public_transport_availability_multiplier', 1))
+    personal_transport_availability_multiplier = float(kwargs.get('personal_transport_availability_multiplier', 0))
+    max_target_s = float(kwargs.get('max_target_s', 30.0))
+    target_s_divider = float(kwargs.get('target_s_divider', 6))
+    coeff_multiplier = float(kwargs.get('coeff_multiplier', 5))
 
     if walking_time_cost == 0 and transport_time_cost == 0:
         return {
-            'walking_geometry': None,
-            'transport_geometry': None,
-            'car_geometry': None,
+            'walking_geometry': json.dumps({'type': 'Polygon', 'coordinates': []}),
+            'transport_geometry': json.dumps({'type': 'Polygon', 'coordinates': []}),
+            'car_geometry': json.dumps({'type': 'Polygon', 'coordinates': []}),
             'services': dict(),
             'provision_result': 0.0,
             'parameters': {
                 'walking_time_cost': walking_time_cost,
                 'transport_time_cost': transport_time_cost,
-                'personal_transport_time_cost': personal_transport_cost,
+                'personal_transport_time_cost': personal_transport_time_cost,
                 'intensity': intensity,
                 'significance': significance
             }
         }
 
-    # walking_geometry, transport_geometry, car_geometry = avaliability.ensure_ready(*coords, walking_time_cost, transport_time_cost, personal_transport_cost)
+    # walking_geometry, transport_geometry, car_geometry = avaliability.ensure_ready(*coords, walking_time_cost, transport_time_cost, personal_transport_time_cost)
 
     # Walking
 
@@ -308,7 +321,7 @@ def compute_atomic_provision(conn_houses: psycopg2.extensions.connection, conn_p
 
     # perosonal_transport (car)
 
-    car_geometry = avaliability.get_car(*coords, personal_transport_cost)
+    car_geometry = avaliability.get_car(*coords, personal_transport_time_cost)
     
     cur_houses.execute('\nUNION\n'.join(
         map(lambda function_and_name: f"SELECT id, address, name, ST_AsGeoJSON(ST_Centroid(geometry)), capacity as power, '{function_and_name[1]}' as service_type FROM {function_and_name[0]} WHERE ST_WITHIN(geometry, ST_SetSRID(ST_GeomFromGeoJSON(%s::text), 4326))", # type: ignore
@@ -343,29 +356,28 @@ def compute_atomic_provision(conn_houses: psycopg2.extensions.connection, conn_p
         target_V = significance
 
         # Рассчитать доступность D услуг
-        df_target_servs['availability'] = np.where(df_target_servs['availability_type'] == 'walking', 1, np.where(df_target_servs['availability_type'] == 'public_transport', round(1 / target_I, 2), 0))
+        df_target_servs['availability'] = np.where(df_target_servs['availability_type'] == 'walking', walking_availability,
+                np.where(df_target_servs['availability_type'] == 'public_transport',
+                        round(1 / target_I * public_transport_availability_multiplier, 2), round(1 / target_I * personal_transport_availability_multiplier)))
 
         # Вычислить мощность S предложения по целевому типу услуги для целевой группы
         target_S = (df_target_servs['power'] * df_target_servs['availability']).sum()
 
-        # Если рассчитанная мощность S > 30, то S принимается равной 30
-        if target_S > 30:
-            target_S = 30.0
+        # Если рассчитанная мощность S > max_target_s, то S принимается равной max_target_s
+        if target_S > max_target_s:
+            target_S = max_target_s
 
         # Вычислить значение обеспеченности О
         if target_V == 0.5:
-            target_O = target_S / 6
-        elif target_V > 0.5:
-            # Вычислить вспомогательный параметр a
-            a = (target_V - 0.5) * 5
-            target_O = ((target_S / 6) ** (a + 1)) / (5 ** a)
+            target_O = target_S / target_s_divider
         else:
-            # Вычислить вспомогательный параметр b
-            b = (0.5 - target_V) * 5
-            target_O = 5 - ((5 - target_S / 6) ** (b + 1)) / 5 ** b
+            coeff = abs(target_V - 0.5) * coeff_multiplier
+            if target_V > 0.5:
+                target_O = ((target_S / target_s_divider) ** (coeff + 1)) / (5 ** coeff)
+            else:
+                target_O = 5 - ((5 - target_S / target_s_divider) ** (coeff + 1)) / (5 ** coeff)
 
     target_O = round(target_O, 2)
-    # print(f'Обеспеченность социальной группы ({soc_group}) функцией ({function}) в ситуации ({situation}) в точке ({coords[0]:.3f}, {coords[1]:.3f}): {target_O}')
 
     if use_database:
         cur_provision.execute('SELECT id from atomic WHERE latitude = %s AND longitude = %s AND walking = %s AND transport = %s AND intensity = %s AND significance = %s',
@@ -375,8 +387,6 @@ def compute_atomic_provision(conn_houses: psycopg2.extensions.connection, conn_p
             cur_provision.execute('INSERT INTO atomic (latitude, longitude, walking, transport, intensity, significance, provision_value) VALUES (%s, %s, %s, %s, %s, %s, %s)',
                     (*coords, walking_time_cost, transport_time_cost, intensity, significance, target_O))
             conn_provision.commit()
-        # else:
-        #     cur_provision.execute('UPDATE atomic SET provision_value = %s WHERE id = %s', (target_O, id[0][0]))
 
     return {
         'walking_geometry': json.loads(walking_geometry),
@@ -389,7 +399,7 @@ def compute_atomic_provision(conn_houses: psycopg2.extensions.connection, conn_p
         'parameters': {
             'walking_time_cost': walking_time_cost,
             'transport_time_cost': transport_time_cost,
-            'personal_transport_time_cost': personal_transport_cost,
+            'personal_transport_time_cost': personal_transport_time_cost,
             'intensity': intensity,
             'significance': significance
         }
@@ -448,15 +458,15 @@ def get_aggregation(conn_provision: psycopg2.extensions.connection, conn_houses:
             else:
                 found_id = id
         del cur_data
+    elif where_type == 'house':
+        cur_provision.execute('SELECT id, avg_intensity, avg_significance, avg_provision, time_done FROM aggregation_house'
+                ' WHERE social_group_id = (SELECT id from social_groups where name = %s)'
+                ' AND living_situation_id = (SELECT id from living_situations where name = %s)'
+                ' AND city_function_id = (SELECT id from city_functions where name = %s)'
+                ' AND latitude = %s AND longitude = %s',
+                (soc_group, situation, function, *where))
     elif where_type == 'total':
         raise Exception('This method is not available for now')
-    # else:
-    #     cur_provision.execute('SELECT id, avg_intensity, avg_significance, avg_provision, time_done FROM aggregation_house'
-    #             ' WHERE social_group_id = (SELECT id from social_groups where name = %s)'
-    #             ' AND living_situation_id = (SELECT id from living_situations where name = %s)'
-    #             ' AND city_function_id = (SELECT id from city_functions where name = %s)'
-    #             ' AND latitude = %s and longitude = %s',
-    #             (soc_group, situation, function, where[0], where[1]))
         
     if soc_group is None:
         soc_groups = social_groups
@@ -578,15 +588,15 @@ def get_aggregation(conn_provision: psycopg2.extensions.connection, conn_houses:
         else:
             cur_provision.provision.execute(f'UPDATE aggregation_{where_column} SET avg_intensity = %s, avg_significance = %s, avg_provision = %s, time_done = %s WHERE id = %s',
                     (intensity_houses, significance_houses, provision_houses, done_time, found_id))
-    # else:
-    #     if found_id is None:
-    #         cur_provision.execute('INSERT INTO aggregation_house (social_group_id, living_situation_id, city_function_id, latitude, longitude, avg_intensity, avg_significance, avg_provision, time_done)'
-    #                 'VALUES ((SELECT id from social_groups where name = %s), (SELECT id from living_situations where name = %s), (SELECT id from city_functions where name = %s),'
-    #                 ' %s, %s, %s, %s, %s)',
-    #                 (soc_group, situation, function, *where, intensity_houses, significance_houses, provision_houses, done_time))
-    #     else:
-    #         cur_provision.execute('UPDATE aggregation_house SET intensity = %s, avg_significance = %s, avg_provision = %s, time_done = %s WHERE id = %s', 
-    #                 (intensity_houses, significance_houses, provision_houses, done_time, found_id))
+    else:
+        if found_id is None:
+            cur_provision.execute('INSERT INTO aggregation_house (social_group_id, living_situation_id, city_function_id, latitude, longitude, avg_intensity, avg_significance, avg_provision, time_done)'
+                    'VALUES ((SELECT id from social_groups where name = %s), (SELECT id from living_situations where name = %s), (SELECT id from city_functions where name = %s),'
+                    ' %s, %s, %s, %s, %s, %s)',
+                    (soc_group, situation, function, *where, intensity_houses, significance_houses, provision_houses, done_time))
+        else:
+            cur_provision.execute('UPDATE aggregation_house SET intensity = %s, avg_significance = %s, avg_provision = %s, time_done = %s WHERE id = %s', 
+                    (intensity_houses, significance_houses, provision_houses, done_time, found_id))
     conn_provision.commit()
     return {
         'provision': provision_houses,
@@ -690,9 +700,6 @@ def update_global_data() -> None:
         cur.execute('SELECT name FROM social_groups')
         social_groups = list(map(lambda x: x[0], cur.fetchall()))
         
-        # cur.execute('SELECT name FROM city_functions')
-        # city_functions = list(map(lambda x: x[0], cur.fetchall()))
-
         cur.execute('SELECT name FROM living_situations')
         living_situations = list(map(lambda x: x[0], cur.fetchall()))
 
@@ -757,7 +764,7 @@ def atomic_provision() -> Response:
         try:
             return make_response(jsonify({
                 '_links': {'self': {'href': request.path}},
-                '_embedded': compute_atomic_provision(conn_houses, conn_provision, soc_group, situation, function, coords)
+                '_embedded': compute_atomic_provision(conn_houses, conn_provision, coords=coords, **request.args)
             }))
         except Exception as ex:
             traceback.print_exc()
@@ -813,6 +820,43 @@ def aggregated_provision() -> Response:
         except Exception as ex:
             traceback.print_exc()
             return make_response(jsonify({'error': str(ex)}))
+
+@app.route('/api/provision/ready/houses', methods=['GET'])
+def ready_houses() -> Response:
+    soc_group: Optional[str] = request.args.get('soc_group', None, type=str)
+    situation: Optional[str] = request.args.get('situation', None, type=str)
+    function: Optional[str] = request.args.get('function', None, type=str)
+    house: Tuple[Optional[float], Optional[float]]
+    if 'house' in request.args:
+        house = tuple(map(float, request.args['house'].split(','))) # type: ignore
+    else:
+        house = (None, None)
+    with psycopg2.connect(properties.provision_conn_string()) as conn:
+        cur = conn.cursor()
+        cur_str = 'SELECT soc.name, liv.name, fun.name, a.latitude, a.longitude, avg_provision' \
+            ' FROM aggregation_house a JOIN living_situations liv ON liv.id = a.living_situation_id' \
+            ' JOIN social_groups soc ON soc.id = a.social_group_id' \
+            ' JOIN city_functions fun ON fun.id = a.city_function_id'
+        wheres = []
+        for column_name, value in (('soc.name', soc_group), ('liv.name', situation), ('fun.name', function), ('latitude', house[0]), ('longitude', house[1])):
+            if value is not None:
+                wheres.append(f"{column_name} = '{value}'")
+        if len(wheres) != 0:
+            cur_str += ' WHERE ' + ' AND '.join(wheres)
+        cur.execute(cur_str)
+        ans = pd.DataFrame(cur.fetchall(), columns=('social_group', 'living_situation', 'city_function', 'latitude', 'longitude', 'provision'))
+    return make_response(jsonify({
+        '_links': {'self': {'href': request.path}},
+        '_embedded': {
+            'params': {
+                'soc_group': soc_group,
+                'situation': situation,
+                'function': function,
+                'house': f'{house[0]},{house[1]}' if house[0] is not None else None
+            },
+            'result': list((row[1].to_dict() for row in ans.iterrows()))
+        }
+    }))
 
 @app.route('/api/provision/ready/regions', methods=['GET'])
 def ready_districts() -> Response:
@@ -973,7 +1017,7 @@ def list_municipalities() -> Response:
 @app.route('/api', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2020-10-15',
+        'version': '2020-10-20',
         '_links': {
             'self': {
                 'href': request.path
@@ -1005,6 +1049,10 @@ def api_help() -> Response:
             },
             'list-municipalities': {
                 'href': '/api/list/municipalities'
+            },
+            'ready_aggregations_houses': {
+                'href': '/api/provision/ready/houses{?soc_group,situation,function,house}',
+                'templated': True
             },
             'ready_aggregations_regions': {
                 'href': '/api/provision/ready/regions{?soc_group,situation,function,region}',

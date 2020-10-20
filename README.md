@@ -45,13 +45,13 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -T,--transport_model_endpoint \<str\>
 * -S,--skip_aggregation - skip_evaluation
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2020-10-15)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2020-10-20)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2020-10-15 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2020-10-20 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2020-10-15`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2020-10-15`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2020-10-20`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2020-10-20`  
       Ensure that:
         1. _/etc/postgresql/12/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/12/main/pg_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
@@ -71,7 +71,10 @@ At this moment there are endpoints:
 * **/api/provision/atomic**: returns atomic provision value, walking, public transport and personal transport availability geometry,
   and services inside of them. Takes parameters by query. You must set `soc_group` for social group,
   `function` for city function, `situation` for living situation and `point` for coordinates of the house.
-  Point format is `latitude,longitude`.
+    Point format is `latitude,longitude`.  
+    Also you can set some of the calculation parameters by setting values: _walking_time_cost_, _transport_time_cost_, _personal_transport_time_cost_,
+  _walking_availability_, _public_transport_availability_multiplier_, _personal_transport_availability_multiplier_, _max_target_s_,
+  _target_s_divider_, _coeff_multiplier_.
 * **/api/provision/aggregated**: returns the aggregated provision value. Takes parameters by query. You should set at least something in: `soc_group` for social group,
   `function` for city function, `situation` for living situation, `region` for district,`municipality` for municipality and `house` for house (format: latitude,longitude).
 * **/api/provision/ready/regions**: returns the list of already aggregated by districts provision values.
@@ -92,7 +95,8 @@ Output format:
 {
   "_links": {
     "aggregated-provision": {
-      "href": "/api/provision/aggregated{?soc_group,situation,function,region,municipality,"
+      "href": "/api/provision/aggregated{?soc_group,situation,function,region,municipality,house}",
+      "templated": true
     },
     "atomic_provision": {
       "href": "/api/provision/atomic{?soc_group,situation,function,point}",
@@ -117,6 +121,18 @@ Output format:
     },
     "list-social_groups": {
       "href": "/api/list/social_groups"
+    },
+    "ready_aggregations_houses": {
+      "href": "/api/provision/ready/houses{?soc_group,situation,function,house}",
+      "templated": true
+    },
+    "ready_aggregations_municipalities": {
+      "href": "/api/provision/ready/municipalities{?soc_group,situation,function,municipality}",
+      "templated": true
+    },
+    "ready_aggregations_regions": {
+      "href": "/api/provision/ready/regions{?soc_group,situation,function,region}",
+      "templated": true
     },
     "self": {
       "href": "/api"
