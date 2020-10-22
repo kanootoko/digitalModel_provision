@@ -63,9 +63,13 @@ class Avaliability:
             )
         except Exception:
             ans = json.dumps({'type': 'Polygon', 'coordinates': []})
+            self.conn.rollback()
         if round(lat, 3) == lat and round(lan, 3) == lan:
-            cur.execute(f"insert into walking (latitude, longitude, time, geometry) values ({lat}, {lan}, {t}, ST_SetSRID(ST_GeomFromGeoJSON('{ans}'::text), 4326))")
-            self.conn.commit()
+            try:
+                cur.execute(f"INSERT INTO walking (latitude, longitude, time, geometry) VALUES ({lat}, {lan}, {t}, ST_SetSRID(ST_GeomFromGeoJSON('{ans}'::text), 4326)) ON CONFLICT DO NOTHING")
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
         if pipe is not None:
             pipe.send(ans)
         return ans
@@ -81,14 +85,14 @@ class Avaliability:
                 pipe.send(res)
             return res
         cur = self.conn.cursor()
-        cur.execute(f'select ST_AsGeoJSON(geometry) from transport where latitude = {lat} and longitude = {lan} and time = {t}')
+        cur.execute(f'SELECT ST_AsGeoJSON(geometry) FROM transport where latitude = {lat} and longitude = {lan} and time = {t}')
         res = cur.fetchall()
         if len(res) != 0:
             if pipe is not None:
                 pipe.send(res[0][0])
             return res[0][0]
         if t >= 60:
-            cur.execute(f'select ST_AsGeoJSON(geometry) from transport where time = {t} limit 1')
+            cur.execute(f'SELECT ST_AsGeoJSON(geometry) FROM transport where time = {t} limit 1')
             res = cur.fetchall()
             if len(res) != 0:
                 if pipe is not None:
@@ -111,10 +115,14 @@ class Avaliability:
                 ans = cur.fetchall()[0][0]
         except Exception:
             ans = json.dumps({'type': 'Polygon', 'coordinates': []})
+            self.conn.rollback()
 
         if round(lat, 3) == lat and round(lan, 3) == lan:
-            cur.execute('INSERT INTO transport (latitude, longitude, time, geometry) VALUES (%s, %s, %s, ST_SetSRID(ST_GeomFromGeoJSON(%s::text), 4326))', (lat, lan, t, ans))
-            self.conn.commit()
+            try:
+                cur.execute('INSERT INTO transport (latitude, longitude, time, geometry) VALUES (%s, %s, %s, ST_SetSRID(ST_GeomFromGeoJSON(%s::text), 4326)) ON CONFLICT DO NOTHING', (lat, lan, t, ans))
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
         if pipe is not None:
             pipe.send(ans)
         return ans
@@ -159,9 +167,10 @@ class Avaliability:
                 ans = cur.fetchall()[0][0]
         except Exception:
             ans = json.dumps({'type': 'Polygon', 'coordinates': []})
+            self.conn.rollback()
 
         if round(lat, 3) == lat and round(lan, 3) == lan:
-            cur.execute('INSERT INTO car (latitude, longitude, time, geometry) VALUES (%s, %s, %s, ST_SetSRID(ST_GeomFromGeoJSON(%s::text), 4326))', (lat, lan, t, ans))
+            cur.execute('INSERT INTO car (latitude, longitude, time, geometry) VALUES (%s, %s, %s, ST_SetSRID(ST_GeomFromGeoJSON(%s::text), 4326)) ON CONFLICT DO NOTHING', (lat, lan, t, ans))
             self.conn.commit()
         if pipe is not None:
             pipe.send(ans)
@@ -268,7 +277,7 @@ def compute_atomic_provision(conn_houses: psycopg2.extensions.connection, conn_p
     target_s_divider = float(kwargs.get('target_s_divider', 6))
     coeff_multiplier = float(kwargs.get('coeff_multiplier', 5))
 
-    if walking_time_cost == 0 and transport_time_cost == 0:
+    if walking_time_cost == 0 and transport_time_cost == 0 and personal_transport_time_cost == 0 and personal_transport_availability_multiplier == 0:
         return {
             'walking_geometry': json.dumps({'type': 'Polygon', 'coordinates': []}),
             'transport_geometry': json.dumps({'type': 'Polygon', 'coordinates': []}),
@@ -362,7 +371,7 @@ def compute_atomic_provision(conn_houses: psycopg2.extensions.connection, conn_p
         # Рассчитать доступность D услуг
         df_target_servs['availability'] = np.where(df_target_servs['availability_type'] == 'walking', walking_availability,
                 np.where(df_target_servs['availability_type'] == 'public_transport',
-                        round(1 / target_I * public_transport_availability_multiplier, 2), round(1 / target_I * personal_transport_availability_multiplier)))
+                        round(1 / target_I * public_transport_availability_multiplier, 2), round(1 / target_I * personal_transport_availability_multiplier, 2)))
 
         # Вычислить мощность S предложения по целевому типу услуги для целевой группы
         target_S = (df_target_servs['power'] * df_target_servs['availability']).sum()
@@ -461,7 +470,6 @@ def get_aggregation(conn_provision: psycopg2.extensions.connection, conn_houses:
                 }
             else:
                 found_id = id
-        del cur_data
     elif where_type == 'house':
         cur_provision.execute('SELECT id, avg_intensity, avg_significance, avg_provision, time_done FROM aggregation_house'
                 ' WHERE social_group_id = (SELECT id from social_groups where name = %s)'
@@ -469,9 +477,25 @@ def get_aggregation(conn_provision: psycopg2.extensions.connection, conn_houses:
                 ' AND city_function_id = (SELECT id from city_functions where name = %s)'
                 ' AND latitude = %s AND longitude = %s',
                 (soc_group, situation, function, *where))
+        cur_data = cur_provision.fetchall()
+        if len(cur_data) != 0:
+            id, intensity, significance, provision, done =  cur_data[0]
+            if not update:
+                return {
+                    'provision': provision,
+                    'intensity': intensity,
+                    'significance': significance,
+                    'time_done': done
+                }
+            else:
+                found_id = id
     elif where_type == 'total':
         raise Exception('This method is not available for now')
-        
+    else:
+        raise Exception(f'Unknown aggregation type: "{where_type}"')
+
+    del cur_data
+
     if soc_group is None:
         soc_groups = social_groups
     else:
@@ -561,10 +585,14 @@ def get_aggregation(conn_provision: psycopg2.extensions.connection, conn_houses:
                     provision_group += groups_provision[soc_group][0] * number / cnt_functions
                     intensity_group += groups_provision[soc_group][1] * number / cnt_functions
                     significance_group += groups_provision[soc_group][2] * number / cnt_functions
+            elif len(groups_provision) != 0:
+                provision_group = sum(map(lambda x: x[0], groups_provision.values())) / len(groups_provision)
+                intensity_group = sum(map(lambda x: x[1], groups_provision.values())) / len(groups_provision)
+                significance_group = sum(map(lambda x: x[2], groups_provision.values())) / len(groups_provision)
             else:
-                provision_group = sum(map(lambda x: x[0], groups_provision.values())) / cnt_groups
-                intensity_group = sum(map(lambda x: x[1], groups_provision.values())) / cnt_groups
-                significance_group = sum(map(lambda x: x[2], groups_provision.values())) / cnt_groups
+                provision_group = 0
+                intensity_group = 0
+                significance_group = 0
         elif cnt_groups != 0:
             provision_group /= cnt_groups
             intensity_group /= cnt_groups
