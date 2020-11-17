@@ -45,13 +45,13 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -T,--transport_model_endpoint \<str\>
 * -S,--skip_aggregation - skip_evaluation
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2020-11-10)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2020-11-17)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2020-11-10 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2020-11-17 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2020-11-10`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2020-11-10`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2020-11-17`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2020-11-17`  
       Ensure that:
         1. _/etc/postgresql/12/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/12/main/pg_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
@@ -84,9 +84,11 @@ At this moment there are endpoints:
   Takes parameters by query. You can set `social_group`, `city_function`, `living_situation` or `district` parameter to specify the request.
 * **/api/provision/ready/municipalities**: returns the list of already aggregated by municipalities provision values.
   Takes parameters by query. You can set `social_group`, `city_function`, `living_situation` or `municipality` parameter to specify the request.
-* **/api/list/social_groups**: returns list of social groups. If you specify a city_function, only relative social groups will be returned
-* **/api/list/city_functions**: returns a list of city functions. If you specify a social_group, only relative city functions will be returned
-* **/api/list/living_situations**: returns a list of living situations. If you specify a social_group, only relative living situations will be returned
+* **/api/list/social_groups**: returns list of social groups. If you specify a city_function and/or living_situation, only relative social groups will be returned
+* **/api/list/city_functions**: returns a list of city functions. If you specify a social_group and/or living_situation,
+  only relative city functions will be returned
+* **/api/list/living_situations**: returns a list of living situations. If you specify a social_group and/or city_function,
+  only relative living situations will be returned
 * **/api/relevance/social_groups**: returns a list of social groups. If you specify city_function as a parameter, the output will be limited to social groups
   relevant to this city function, and significane will be returned for each of them. If you specify both city_function and living_situation, then
   intensity will be returned too.
@@ -94,11 +96,12 @@ At this moment there are endpoints:
   relevant to this social group, and significane will be returned for each of them. If you specify both social_group and living_situation, then
   intensity will be returned too.
 * **/api/relevance/living_situations**: returns a list of living situations. If you specify social_group, the output will be limited to living situations relative
-  to the given social group and significance will be returned for each of them. If the city_function parameter is also specified, intensity will be returned
+  to the given social group and intensity will be returned for each of them. If the city_function parameter is also specified, significance will be returned
   in params section
-* **/api/houses**: returns coordinates of houses inside the square of `firstPoint` and `secondPoint` parameters coordinates.
+* **/api/list/infrastructures**: returns a list of infrastructures with functions list for each of them and with services list for each funtion
 * **/api/list/districts**: returns a list of districts
 * **/api/list/municipalities**: returns a list of municipalities
+* **/api/houses**: returns coordinates of houses inside the square of `firstPoint` and `secondPoint` parameters coordinates.
 
 ### /api
 
