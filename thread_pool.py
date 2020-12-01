@@ -14,9 +14,10 @@ class ThreadPoolProcess(Process):
     def run(self) -> None:
         while True:
             try:
-                function, task = self._tasks.get(timeout=10)
-                if task is None:
+                tmp =  self._tasks.get(timeout=10)
+                if tmp is None:
                     break
+                function, task = tmp
                 try:
                     if isinstance(task, list) or isinstance(task, tuple):
                         # self._results.append(self._function(*task, **self._resources))

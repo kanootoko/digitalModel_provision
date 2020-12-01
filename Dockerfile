@@ -6,5 +6,6 @@ COPY provision_api.py /
 COPY calculate_services_cnt.py /
 COPY thread_pool.py /
 COPY function_service.json /
+COPY experimental_aggregation.py /
 
 ENTRYPOINT [ "python3", "/provision_api.py" ]

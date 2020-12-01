@@ -62,8 +62,10 @@ def print_stats(pipe: Connection, start_time: float, done_now: Value, done_total
         pipe.recv()
 
 def count_service(house: Union[Tuple[float, float, float], Tuple[float, float]], service: str, t: int,
-        avail_type: str, provision_conn: psycopg2.extensions.connection,
+        avail_type: str, provision_conn: psycopg2.extensions.connection, houses_conn: psycopg2.extensions.cursor,
         done_now: Optional[Value] = None, done_total: Optional[Value] = None) -> List[int]:
+    if t == 0:
+        return []
     with provision_conn.cursor() as cur_provision:
         if done_total is not None:
             done_total.value += 1
@@ -77,7 +79,7 @@ def count_service(house: Union[Tuple[float, float, float], Tuple[float, float]],
         if len(tmp) != 0:
             geom = tmp[0][0]
         elif t >= 40:
-            cur_provision.execute('SELECT services_list from service_counts where service_name = %s AND latitude = %s AND longitude = %s AND availability_type = %s LIMIT 1',
+            cur_provision.execute('SELECT services_list from service_counts where service_name = %s AND latitude = %s AND longitude = %s AND time > 40 AND availability_type = %s LIMIT 1',
                     (service, house[0], house[1], avail_type))
             tmp = cur_provision.fetchall()
             if len(tmp) != 0:
@@ -87,12 +89,12 @@ def count_service(house: Union[Tuple[float, float, float], Tuple[float, float]],
             if len(tmp) != 0:
                 geom = tmp[0][0]
             else:
-                print(f'Absolutely no {avail_type} geometry found for time={t}')
+                # print(f'Absolutely no {avail_type} geometry found for time={t}')
                 return []
         else:
-            print(f'No {avail_type} geometry found for house#{house[2] if len(house) == 3 else "?"} ({house[0]}, {house[1]}) and time={t}') # type: ignore
+            # print(f'No {avail_type} geometry found for house#{house[2] if len(house) == 3 else "?"} ({house[0]}, {house[1]}) and time={t}') # type: ignore
             return []
-        with properties.houses_conn.cursor() as cur_houses:
+        with houses_conn.cursor() as cur_houses:
             cur_houses.execute(f'SELECT id FROM {service} WHERE ST_WITHIN(geometry, ST_SetSRID(ST_GeomFromGeoJSON(%s::text), 4326))', (geom,))
             services = list(map(lambda x: x[0], cur_houses.fetchall()))
         cur_provision.execute('INSERT INTO service_counts (service_name, house_id, latitude, longitude, time, availability_type, service_count, services_list)'
@@ -110,9 +112,10 @@ def count_services(services: List[str], houses: List[Tuple[float, float]], walki
     info_thread = threading.Thread(target=lambda: print_stats(pipe[1], time.time(), done_now, done_total, 10))
     info_thread.start()
     properties.close()
-    tp = ThreadPool(6, [lambda: ('provision_conn', psycopg2.connect(properties.provision_conn_string())), 
+    tp = ThreadPool(6, [lambda: ('provision_conn', psycopg2.connect(properties.provision_conn_string())),
+                lambda: ('houses_conn', psycopg2.connect(properties.houses_conn_string())),
                 lambda: ('done_now', done_now), lambda: ('done_total', done_total)],
-            {'provision_conn': psycopg2.extensions.connection.close}, max_size=10)
+            {'provision_conn': lambda conn: conn.close(), 'houses_conn': lambda conn: conn.close()}, max_size=10)
     try:
         for house in houses:
             print(f'Counting for house ({house[0]}:{house[1]})')
