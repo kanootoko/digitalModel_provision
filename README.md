@@ -46,13 +46,13 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -T,--transport_model_endpoint \<str\> - tranaport_model_endpoint
 * -S,--aggregate_target \<str\>- aggregation_target
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2020-12-01)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2020-12-06)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2020-12-01 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2020-12-06 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2020-12-01`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2020-12-01`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2020-12-06`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2020-12-06`  
       Ensure that:
         1. _/etc/postgresql/12/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/12/main/pg_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
@@ -111,11 +111,16 @@ At this moment there are endpoints:
 
 ### /api
 
-Output format:
-
 ```json
 {
   "_links": {
+    "self": {
+      "href": "/api/"
+    },
+    "atomic_provision": {
+      "href": "/api/provision/atomic/{?social_group,living_situation,city_function,point}",
+      "templated": true
+    },
     "aggregated-provision": {
       "href": "/api/provision/aggregated/{?social_group,living_situation,city_function,region}",
       "templated": true
@@ -124,64 +129,61 @@ Output format:
       "href": "/api/provision/alternative/{?social_group,living_situation,service,region,return_debug_info}",
       "templated": true
     },
-    "atomic_provision": {
-      "href": "/api/provision/atomic/{?social_group,living_situation,city_function,point}",
+    "list-social_groups": {
+      "href": "/api/list/social_groups/{?city_function,living_situation}",
       "templated": true
     },
-    "get-houses": {
-      "href": "/api/houses/{?firstPoint,secondPoint}",
+    "list-living_situations": {
+      "href": "/api/list/living_situations/{?social_group,city_function}",
       "templated": true
     },
     "list-city_functions": {
       "href": "/api/list/city_functions/{?social_group,living_situation}",
       "templated": true
     },
-    "list-districts": {
-      "href": "/api/list/districts/"
+    "list-services": {
+      "href": "/api/list/services/"
     },
     "list-infrastructures": {
       "href": "/api/list/infrastructures/"
     },
-    "list-living_situations": {
-      "href": "/api/list/living_situations/{?social_group,city_function}",
-      "templated": true
+    "list-districts": {
+      "href": "/api/list/districts/"
     },
     "list-municipalities": {
       "href": "/api/list/municipalities/"
     },
-    "list-services": {
-      "href": "/api/list/services/"
-    },
-    "list-social_groups": {
-      "href": "/api/list/social_groups/{?city_function,living_situation}",
+    "list-city_hierarchy": {
+      "href": "/api/list/city_hierarchy/{?include_blocks,target}",
       "templated": true
     },
     "ready_aggregations_districts": {
       "href": "/api/provision/ready/districts/{?social_group,living_situation,city_function,district}",
       "templated": true
     },
-    "ready_aggregations_houses": {
-      "href": "/api/provision/ready/houses/{?social_group,living_situation,city_function,house}",
-      "templated": true
-    },
     "ready_aggregations_municipalities": {
       "href": "/api/provision/ready/municipalities/{?social_group,living_situation,city_function,municipality}",
       "templated": true
     },
-    "relevant-city_functions": {
-      "href": "/api/relevance/city_functions/{?social_group,living_situation}",
-      "templated": true
-    },
-    "relevant-living_situations": {
-      "href": "/api/relevance/living_situations/{?social_group,city_function}",
+    "ready_aggregations_houses": {
+      "href": "/api/provision/ready/houses/{?social_group,living_situation,city_function,house}",
       "templated": true
     },
     "relevant-social_groups": {
       "href": "/api/relevance/social_groups/{?city_function,living_situation}",
       "templated": true
     },
-    "self": {
-      "href": "/api/"
+    "relevant-living_situations": {
+      "href": "/api/relevance/living_situations/{?social_group,city_function}",
+      "templated": true
+    },
+    "relevant-city_functions": {
+      "href": "/api/relevance/city_functions/{?social_group,living_situation}",
+      "templated": true
+    },
+    "get-houses": {
+      "href": "/api/houses/{?firstPoint,secondPoint}",
+      "templated": true
     }
   },
   "version": ":version"
@@ -192,8 +194,6 @@ Output format:
 
 ### /api/list/social_groups
 
-Output format:
-
 ```json
 {
   "_embedded": {
@@ -202,8 +202,7 @@ Output format:
       "living_situation": ":living_situation"
     },
     "social_groups": [
-      "Младенцы (0-1)",
-      "Дети до-детсадовского возраста (1-3)",
+      ":social_group",
       <...>
     ]
   },
@@ -215,19 +214,17 @@ Output format:
 }
 ```
 
-:city_function - string, one of the city functions; or null if not specified in request
+:social_group - string, one of the social groups  
+:city_function - string, one of the city functions; or null if not specified in request  
 :living_situation - string, one of the living situations; or null if not specified in request
 
 ### /api/list/city_functions
-
-Output format:
 
 ```json
 {
   "_embedded": {
     "city_functions": [
-      "Жилье",
-      "Здравоохранение",
+      ":city_function",
       <...>
     ],
     "params": {
@@ -243,19 +240,17 @@ Output format:
 }
 ```
 
-:living_situation - string, one of the living situations; or null if not specified in request
+:city_function - string, one of the city functions  
+:living_situation - string, one of the living situations; or null if not specified in request  
 :social_group - string, one of the social groups; or null if not specified in request
 
 ### /api/list/services
-
-Output format:
 
 ```json
 {
   "_embedded": {
     "services": [
-      "Свалки",
-      "Точки раздельного сбора",
+      ":service_name",
       <...>
     ]
   },
@@ -267,16 +262,15 @@ Output format:
 }
 ```
 
-### /api/list/living_situations
+:service_name - string, name of service
 
-Output format:
+### /api/list/living_situations
 
 ```json
 {
   "_embedded": {
     "living_situations": [
-      "Типичный нерабочий день",
-      "Заболевание ОРВИ",
+      ":living_situation",
       <...>
     ],
     "params": {
@@ -292,19 +286,17 @@ Output format:
 }
 ```
 
-:city_function - string, one of the city functions; or null if not specified in request
+:living_situation - string, one of the living situations
+:city_function - string, one of the city functions; or null if not specified in request  
 :social_group - string, one of the social groups; or null if not specified in request
 
 ### /api/list/districts
-
-Output format:
 
 ```json
 {
   "_embedded": {
     "districts": [
-      "Выборгский район",
-      "Петродворцовый район",
+      ":district_name",
       <...>
     ]
   },
@@ -316,16 +308,15 @@ Output format:
 }
 ```
 
-### /api/list/municipalities
+:district_name - string, name of district
 
-Output format:
+### /api/list/municipalities
 
 ```json
 {
   "_embedded": {
     "municipalities": [
-      "поселок Смолячково",
-      "поселок Молодежное",
+      ":municipality_name",
       <...>
     ]
   },
@@ -336,6 +327,53 @@ Output format:
   }
 }
 ```
+
+:municipality_name - string, name of municipality
+
+### /api/list/city_hierarchy
+
+```json
+{
+  "_embedded": {
+    "districts": [
+      {
+        "id": ":district_id",
+        "full_name": ":district_full_name",
+        "short_name": ":district_short_name",
+        "population": ":district_population",
+        "municipalities": [
+          {
+            "id": ":municipality_id",
+            "full_name": ":municipality_full_name",
+            "short_name": ":municipality_short_name",
+            "population": ":municipality_population",
+            "blocks": [
+              {
+                "id": ":block_id",
+                "population": ":block_population"
+              },
+              <...>
+            ]
+          },
+          <...>
+        ]
+      },
+      <...>
+    ]
+  },
+  "_links": {
+    "self": {
+      "href": "/api/list/city_hierarchy/"
+    }
+  }
+}
+```
+
+:district_id, :municipality_id, :block_id - int, id of district, municipality or block in database  
+:district_full_name, :district_short_name, :municipality_full_name, :municipality_short_name - string, full or short name of district or municipality in database  
+:district_population, :municipality_population - int, population of district or municipality  
+:block_population - int or null if not defined - population of block
+"blocks" block is missing if "include_blocks" parameter is not set
 
 ### /api/list/infrastructures
 
@@ -367,7 +405,7 @@ Output format:
 }
 ```
 
-:infrastructure_name - string  
+:infrastructure_name - string, name of infrastructure  
 :function_name - string, one of the city_functions  
 :service_name - string, one of the service names
 
@@ -464,8 +502,6 @@ Output format:
 
 ### /api/provision/atomic
 
-Output format:
-
 ```json
 {
   "_embedded": {
@@ -523,8 +559,6 @@ Output format:
 
 ### /api/provision/aggregated
 
-Output format:
-
 ```json
 {
   "_embedded": {
@@ -573,8 +607,6 @@ Output format:
 :time_done - time when aggregation was completed
 
 ### /api/provision/alternative
-
-Output format:
 
 ```json
 {
@@ -646,22 +678,20 @@ Output format:
 }
 ```
 
-:social_group, :living_situation, :service - string, social_group, living_situation and service, or null in case of aggregation
-:calculation_social_group, :calculation_living_situation, :calculation_service - string, social_group, living_situation and service
-:intensity - float from 0.0 to 10.0 - intensity divided by 10
-:significance - float from 0,0 to 10.0
-:walking_cost, :public_transport_cost, :personal_transport_cost - int
-:walking_balance_raw, :public_transport_balance_raw, :personal_transport_balance_raw - float
-:walking_balance, :public_transport_balance, :personal_transport_balance - float
-:walking_territory, :public_transport_territory, :personal_transport_territory - string, one of the "block", "municipality", "district" or "city"
-:result_calculations - int, number of aggregation launches with all of the parameters given
-:loyalty, :loyalty_raw - float
-:result_loyalty, :alternative_result_loyalty - float, alternative is loyalty where instead of minimums average is used
+:social_group, :living_situation, :service - string, social_group, living_situation and service, or null in case of aggregation  
+:calculation_social_group, :calculation_living_situation, :calculation_service - string, social_group, living_situation and service  
+:intensity - float from 0.0 to 10.0 - intensity divided by 10  
+:significance - float from 0,0 to 10.0  
+:walking_cost, :public_transport_cost, :personal_transport_cost - int  
+:walking_balance_raw, :public_transport_balance_raw, :personal_transport_balance_raw - float  
+:walking_balance, :public_transport_balance, :personal_transport_balance - float  
+:walking_territory, :public_transport_territory, :personal_transport_territory - string, one of the "block", "municipality", "district" or "city"  
+:result_calculations - int, number of aggregation launches with all of the parameters given  
+:loyalty, :loyalty_raw - float  
+:result_loyalty, :alternative_result_loyalty - float, alternative is loyalty where instead of minimums average is used  
 "debug_info" block is missing if "return_debug_info" parameter is not set
 
 ### /api/provision/ready/districts
-
-Output format:
 
 ```json
 {
@@ -698,8 +728,6 @@ Output format:
 
 ### /api/provision/ready/municipalities
 
-Output format:
-
 ```json
 {
   "_embedded": {
@@ -730,7 +758,7 @@ Output format:
 :city_function, :res_function - string representing city city_function. :city_function can be null in case it was not set in request, otherwise they are the same  
 :municipality, :res_municipality - string representing municipality. :municipality can be null in case it was not set in request, otherwise they are the same  
 :social_group, :res_soc_group - string representing social group. :social_group can be null in case it was not set in request, otherwise they are the same  
-:living_situation, :res_situation - string representing social group. :living_situation can be null in case it was not set in request, otherwise they are the same  
+:living_situation, :res_situation - string representing social group. :living_situation can be null in case it was not set in request, otherwise they are the same
 :provision - float from 0.0 to 5.0
 
 ### /api/houses
@@ -757,5 +785,5 @@ Output format:
 }
 ```
 
-:firstCoord, :secondCoord - points in format `latitude,longitude`
+:firstCoord, :secondCoord - points in format `latitude,longitude`  
 :house_latitude, :house_longitude - float with precision of 3 digits after a point

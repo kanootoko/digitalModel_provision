@@ -8,6 +8,16 @@ import threading
 from multiprocessing import Pipe, Value
 from multiprocessing.connection import Connection
 
+try:
+    import shapely, geopandas as gpd
+    use_shapely = False
+except ModuleNotFoundError:
+    class gpd: # type: ignore
+        class GeoDataFrame:
+            def __init__(_):
+                raise NotImplementedError('Please install geopandas to use this')
+    use_shapely = True
+
 from thread_pool import ThreadPool
 
 class Properties:
@@ -26,22 +36,24 @@ class Properties:
         self.houses_db_pass = houses_db_pass
         self._houses_conn: Optional[psycopg2.extensions.connection] = None
         self._provision_conn: Optional[psycopg2.extensions.connection] = None
+    @property
     def provision_conn_string(self) -> str:
         return f'host={self.provision_db_addr} port={self.provision_db_port} dbname={self.provision_db_name}' \
                 f' user={self.provision_db_user} password={self.provision_db_pass}'
+    @property
     def houses_conn_string(self) -> str:
         return f'host={self.houses_db_addr} port={self.houses_db_port} dbname={self.houses_db_name}' \
                 f' user={self.houses_db_user} password={self.houses_db_pass}'
     @property
     def houses_conn(self):
         if self._houses_conn is None or self._houses_conn.closed:
-            self._houses_conn = psycopg2.connect(self.houses_conn_string())
+            self._houses_conn = psycopg2.connect(self.houses_conn_string)
         return self._houses_conn
             
     @property
     def provision_conn(self):
         if self._provision_conn is None or self._provision_conn.closed:
-            self._provision_conn = psycopg2.connect(self.provision_conn_string())
+            self._provision_conn = psycopg2.connect(self.provision_conn_string)
         return self._provision_conn
 
     def close(self):
@@ -62,8 +74,9 @@ def print_stats(pipe: Connection, start_time: float, done_now: Value, done_total
         pipe.recv()
 
 def count_service(house: Union[Tuple[float, float, float], Tuple[float, float]], service: str, t: int,
-        avail_type: str, provision_conn: psycopg2.extensions.connection, houses_conn: psycopg2.extensions.cursor,
-        done_now: Optional[Value] = None, done_total: Optional[Value] = None) -> List[int]:
+        avail_type: str, provision_conn: psycopg2.extensions.connection, houses_conn: Optional[psycopg2.extensions.cursor] = None,
+        services_buildings: Optional[gpd.GeoDataFrame] = None, done_now: Optional[Value] = None, done_total: Optional[Value] = None) -> List[int]:
+    assert houses_conn is not None or services_buildings is not None, 'connection to houses database or services_buildings must be provided'
     if t == 0:
         return []
     with provision_conn.cursor() as cur_provision:
@@ -94,9 +107,16 @@ def count_service(house: Union[Tuple[float, float, float], Tuple[float, float]],
         else:
             # print(f'No {avail_type} geometry found for house#{house[2] if len(house) == 3 else "?"} ({house[0]}, {house[1]}) and time={t}') # type: ignore
             return []
-        with houses_conn.cursor() as cur_houses:
-            cur_houses.execute(f'SELECT id FROM {service} WHERE ST_WITHIN(geometry, ST_SetSRID(ST_GeomFromGeoJSON(%s::text), 4326))', (geom,))
-            services = list(map(lambda x: x[0], cur_houses.fetchall()))
+        # print(f'counting services for "{service}" for house#{house[2] if len(house) == 3 else "?"} ({house[0]}, {house[1]} for time={t} by {avail_type}') # type: ignore
+        if services_buildings is not None:
+            servs = services_buildings[services_buildings['type'] == service]
+            servs = servs[servs['geometry'].within(shapely.geometry.shape(json.loads(geom)))].dropna()
+            services = list(servs.index)
+        else:
+            with houses_conn.cursor() as cur_houses: # type: ignore
+                cur_houses.execute(f'SELECT phys_id FROM all_services WHERE service_type = %s AND ST_WITHIN(geometry, ST_SetSRID(ST_GeomFromGeoJSON(%s::text), 4326))', (service, geom,))
+
+                services = list(map(lambda x: x[0], cur_houses.fetchall()))
         cur_provision.execute('INSERT INTO service_counts (service_name, house_id, latitude, longitude, time, availability_type, service_count, services_list)'
                 ' VALUES (%s, %s, %s, %s, %s, %s, %s, %s)', (service, house[2] if len(house) == 3 else None, house[0], house[1], # type: ignore
                         t, avail_type, len(services), json.dumps(services)))
@@ -105,31 +125,33 @@ def count_service(house: Union[Tuple[float, float, float], Tuple[float, float]],
             done_now.value += 1
     return services
 
-def count_services(services: List[str], houses: List[Tuple[float, float]], walking: List[int], public: List[int], car: List[int]) -> None:
+def count_services(services_buildings: Optional[gpd.GeoDataFrame], services: List[str], houses: List[Tuple[float, float]],
+        walking: List[int], public: List[int], car: List[int], threads: int) -> None:
     pipe = Pipe()
     done_now = Value('i', 0)
     done_total = Value('i', 0)
     info_thread = threading.Thread(target=lambda: print_stats(pipe[1], time.time(), done_now, done_total, 10))
     info_thread.start()
     properties.close()
-    tp = ThreadPool(6, [lambda: ('provision_conn', psycopg2.connect(properties.provision_conn_string())),
-                lambda: ('houses_conn', psycopg2.connect(properties.houses_conn_string())),
-                lambda: ('done_now', done_now), lambda: ('done_total', done_total)],
-            {'provision_conn': lambda conn: conn.close(), 'houses_conn': lambda conn: conn.close()}, max_size=10)
+    if services_buildings is not None:
+        tp = ThreadPool(threads, [lambda: ('provision_conn', psycopg2.connect(properties.provision_conn_string)),
+                    lambda: ('services_buildings', services_buildings), lambda: ('done_now', done_now), lambda: ('done_total', done_total)],
+                {'provision_conn': lambda conn: conn.close()}, max_size=threads + 2)
+    else:
+        tp = ThreadPool(threads, [lambda: ('provision_conn', psycopg2.connect(properties.provision_conn_string)),
+                    lambda: ('houses_conn', psycopg2.connect(properties.houses_conn_string)),
+                    lambda: ('done_now', done_now), lambda: ('done_total', done_total)],
+                {'provision_conn': lambda conn: conn.close()}, max_size=threads + 2)
     try:
         for house in houses:
             print(f'Counting for house ({house[0]}:{house[1]})')
             for service in services:
                 for t in walking:
-                    # count_service(house, service, t, 'walking')
                     tp.execute(count_service, (house, service, t, 'walking'))
                 for t in public:
-                    # count_service(house, service, t, 'transport')
                     tp.execute(count_service, (house, service, t, 'transport'))
                 for t in car:
-                    # count_service(house, service, t, 'car')
                     tp.execute(count_service, (house, service, t, 'car'))
-            # tp.results
     except KeyboardInterrupt:
         print('Stopping ThreadPool')
         tp.stop()
@@ -146,10 +168,6 @@ def count_services(services: List[str], houses: List[Tuple[float, float]], walki
 
 
 if __name__ == '__main__':
-    services = ['schools', 'colleges', 'universities', 'clinics', 'hospitals', 'pharmacies', 'woman_doctors', 'health_centers', 'maternity_hospitals',
-            'dentists', 'cemeteries', 'churches', 'gas_stations', 'charging_stations', 'markets', 'supermarkets', 'hypermarkets', 'conveniences',
-            'department_stores', 'veterinaries', 'playgrounds', 'art_spaces', 'zoos', 'theaters', 'museums', 'libraries', 'swimming_pools',
-            'sports_sections', 'cinemas', 'bars', 'bakeries', 'cafes', 'restaurants', 'fastfood']
     # Default properties settings
 
     properties = Properties(
@@ -179,6 +197,10 @@ if __name__ == '__main__':
                         help=f'postgres user name [default: {properties.houses_db_user}]', type=str)
     parser.add_argument('-hW', '--houses_db_pass', action='store', dest='houses_db_pass',
                         help=f'database user password [default: {properties.houses_db_pass}]', type=str)
+    parser.add_argument('-g', '--geometry_utility', action='store', dest='geometry_utility',
+                        help=f'geometry testing utility: "phapely" (if installed) or "postgis" [default: shapely]', type=str, default='shapely')
+    parser.add_argument('-t', '--threads', action='store', dest='threads',
+                        help=f'threads (processes) number for calculations [default: 8]', type=int, default=8)
     args = parser.parse_args()
 
     if args.provision_db_addr is not None:
@@ -201,6 +223,15 @@ if __name__ == '__main__':
         properties.houses_db_user = args.houses_db_user
     if args.houses_db_pass is not None:
         properties.houses_db_pass = args.houses_db_pass
+    if args.geometry_utility == 'postgis':
+        use_shapely = False
+    elif args.geometry_utility == 'shapely':
+        if not use_shapely:
+            print('Geometry utility is set to shapely, but geopandas is missing. Install shapely and geopandas before launching')
+            exit(1)
+    else:
+        print(f'Unknown geometry utility type: {args.geometry_utility}, exiting')
+        exit(1)
 
     with properties.provision_conn.cursor() as cur:
         cur.execute('CREATE TABLE IF NOT EXISTS service_counts ('
@@ -231,6 +262,31 @@ if __name__ == '__main__':
     with properties.houses_conn.cursor() as cur:
         cur.execute(f'SELECT ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float, ROUND(ST_Y(ST_Centroid(geometry))::numeric, 3)::float, id FROM houses where district_id = (SELECT id from districts where full_name = %s)', ('Петроградский район',))
         houses: List[Tuple[float, float]] = list(cur.fetchall())
+
+        cur.execute('SELECT DISTINCT name from service_types')
+        services: List[str] = list(map(lambda x: x[0], cur.fetchall()))
+
+        cur.execute('CREATE MATERIALIZED VIEW IF NOT EXISTS all_services AS SELECT p.id, p.geometry, p.description, f.name, f.opening_hours, f.website,'
+                '    f.phone, f.infrastructure_type_id, b.address, b.year_construct, b.year_repair,'
+                '    b.floors, b.height, b.basement_area, b.project_type, bt.name AS basement_type, ft.name AS floor_type,'
+                '    pc.name AS pollution_category, f.capacity'
+                ' FROM functional_objects f'
+                '    JOIN service_types st ON f.service_type_id = st.id'
+                '    JOIN phys_objs_fun_objs pf ON f.id = pf.fun_obj_id'
+                '    JOIN physical_objects p ON pf.phys_obj_id = p.id'
+                '    JOIN buildings b ON p.id = b.physical_object_id'
+                '    LEFT JOIN pollution_categories pc ON p.pollution_category_id = pc.id'
+                '    LEFT JOIN basement_types bt ON b.basement_type_id = bt.id'
+                '    LEFT JOIN floor_types ft ON b.floor_type_id = ft.id')
+        cur.execute('REFRESH MATERIALIZED VIEW all_services')
+
+        services_buildings: Optional[gpd.GeoDataFrame]
+        if use_shapely:
+            services_buildings = gpd.GeoDataFrame.from_postgis('SELECT phys_id as id, ST_Centroid(geometry) as geometry, capacity, service_type as type FROM all_services',
+                    properties.houses_conn, 'geometry').set_index('id')
+        else:
+            services_buildings = None
+        
     
     print(f'Loaded {len(houses)} houses, {len(walking_time)} walking times, {len(public_transport_time)} public_transport times and {len(car_time)} car times')
     print(f'Working with {len(services)} services')
@@ -239,7 +295,7 @@ if __name__ == '__main__':
 
     start_time = time.time()
     try:
-        count_services(services, houses, walking_time, public_transport_time, car_time)
+        count_services(services_buildings, services, houses, walking_time, public_transport_time, car_time, args.threads)
     except Exception as ex:
         print(f'Exception occured! {ex}')
         traceback.print_exc()

@@ -1,5 +1,5 @@
 from typing import Tuple, Dict, List, Callable, Any
-from multiprocessing import Array, Process, JoinableQueue
+from multiprocessing import Process, JoinableQueue
 from queue import Empty
 
 class ThreadPoolProcess(Process):
@@ -45,11 +45,23 @@ class ThreadPool:
         self.threads = [ThreadPoolProcess(self.queue, resources_init, resources_close) for _ in range(threads)]
         for thread in self.threads:
             thread.start()
+        self._stopping = False
     def execute(self, function: Callable[..., Any], task: Any):
-        self.queue.put((function, task))
+        if not self._stopping:
+            self.queue.put((function, task))
     def stop(self):
-        for _ in range(len(self.threads)):
+        self._stopping = True
+        try:
+            while True:
+                self.queue.get_nowait()
+                self.queue.task_done()
+        except Empty:
+            pass
+        cnt = sum(map(lambda thread: 1 if thread.is_alive else 0, self.threads))
+        for _ in range(cnt):
             self.queue.put(None)
+            self.queue.task_done()
+
     def join(self):
         self.queue.join()
         print('Queue joined')

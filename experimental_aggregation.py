@@ -8,7 +8,7 @@ except ModuleNotFoundError:
     class gpd: # type: ignore
         class GeoDataFrame:
             def __init__(_):
-                raise Exception('Please install geopandas to use this')
+                raise NotImplementedError('Please install geopandas to use this')
     print('GeoPandas is missing, blocks initialization will end up with an error')
 import json
 import time
@@ -30,22 +30,24 @@ class Properties:
         self.houses_db_pass = houses_db_pass
         self._houses_conn: Optional[psycopg2.extensions.connection] = None
         self._provision_conn: Optional[psycopg2.extensions.connection] = None
+    @property
     def provision_conn_string(self) -> str:
         return f'host={self.provision_db_addr} port={self.provision_db_port} dbname={self.provision_db_name}' \
                 f' user={self.provision_db_user} password={self.provision_db_pass}'
+    @property
     def houses_conn_string(self) -> str:
         return f'host={self.houses_db_addr} port={self.houses_db_port} dbname={self.houses_db_name}' \
                 f' user={self.houses_db_user} password={self.houses_db_pass}'
     @property
     def houses_conn(self):
         if self._houses_conn is None or self._houses_conn.closed:
-            self._houses_conn = psycopg2.connect(self.houses_conn_string())
+            self._houses_conn = psycopg2.connect(self.houses_conn_string)
         return self._houses_conn
             
     @property
     def provision_conn(self):
         if self._provision_conn is None or self._provision_conn.closed:
-            self._provision_conn = psycopg2.connect(self.provision_conn_string())
+            self._provision_conn = psycopg2.connect(self.provision_conn_string)
         return self._provision_conn
 
     def close(self):
@@ -480,11 +482,6 @@ def aggregate(needs: pd.DataFrame, infrastructure: pd.DataFrame, blocks: Union[p
     return res
 
 if __name__ == '__main__':
-    services = ['schools', 'colleges', 'universities', 'clinics', 'hospitals', 'pharmacies', 'woman_doctors', 'health_centers', 'maternity_hospitals',
-            'dentists', 'cemeteries', 'churches', 'gas_stations', 'charging_stations', 'markets', 'supermarkets', 'hypermarkets', 'conveniences',
-            'department_stores', 'veterinaries', 'playgrounds', 'art_spaces', 'zoos', 'theaters', 'museums', 'libraries', 'swimming_pools',
-            'sports_sections', 'cinemas', 'bars', 'bakeries', 'cafes', 'restaurants', 'fastfood']
-
     # Default properties settings
     properties = Properties(
             'localhost', 5432, 'provision', 'postgres', 'postgres', 
@@ -574,21 +571,10 @@ if __name__ == '__main__':
         tmp = pd.DataFrame(cur.fetchall(), columns=('social_group', 'city_function', 'significance'))
         needs = needs.merge(tmp, on=['social_group', 'city_function'], how='inner')
 
-        function_service: Dict[str, List[Tuple[str, str]]]
-        with open('function_service.json', encoding='utf-8') as f:
-            function_service = json.load(f)
 
-        cur.execute('SELECT it.name, func.name FROM infrastructure_types it JOIN city_functions func on func.infrastructure_type_id = it.id')
-        infrastructure = pd.DataFrame(cur.fetchall(), columns=('infrastructure', 'function'))
-        tmp = pd.DataFrame(
-            itertools.chain(
-                *list(filter(lambda x: x != [], 
-                        [[(function_name, function[1]) for function in function_service[function_name]] for function_name in function_service.keys()] # type: ignore
-                ))
-            ),
-            columns=('function', 'service')
-        )
-        infrastructure = infrastructure.join(tmp.set_index('function'), on='function', how='left')
+        cur.execute('SELECT i.name, f.name, s.name from city_functions f JOIN infrastructure_types i ON i.id = f.infrastructure_type_id'
+                ' JOIN service_types s ON s.city_function_id = f.id ORDER BY i.name,f.name,s.name;')
+        infrastructure = pd.DataFrame(cur.fetchall(), columns=('infrastructure', 'function', 'service'))
 
     if target == 'everything':
         is_district = True
@@ -610,7 +596,7 @@ if __name__ == '__main__':
     if args.truncate:
         truncate_tables(properties.provision_conn)
     if target != '-':
-        tp = ThreadPool(16, [lambda: ('provision_conn', psycopg2.connect(properties.provision_conn_string()))],
+        tp = ThreadPool(16, [lambda: ('provision_conn', psycopg2.connect(properties.provision_conn_string))],
                 {'provision_conn': lambda conn: conn.close()}, max_size=16)
         for target in targets:
             if is_district:
