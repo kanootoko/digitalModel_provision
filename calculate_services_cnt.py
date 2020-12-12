@@ -10,13 +10,13 @@ from multiprocessing.connection import Connection
 
 try:
     import shapely, geopandas as gpd
-    use_shapely = False
+    use_shapely = True
 except ModuleNotFoundError:
     class gpd: # type: ignore
         class GeoDataFrame:
             def __init__(_):
                 raise NotImplementedError('Please install geopandas to use this')
-    use_shapely = True
+    use_shapely = False
 
 from thread_pool import ThreadPool
 
@@ -118,7 +118,7 @@ def count_service(house: Union[Tuple[float, float, float], Tuple[float, float]],
 
                 services = list(map(lambda x: x[0], cur_houses.fetchall()))
         cur_provision.execute('INSERT INTO service_counts (service_name, house_id, latitude, longitude, time, availability_type, service_count, services_list)'
-                ' VALUES (%s, %s, %s, %s, %s, %s, %s, %s)', (service, house[2] if len(house) == 3 else None, house[0], house[1], # type: ignore
+                ' VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING', (service, house[2] if len(house) == 3 else None, house[0], house[1], # type: ignore
                         t, avail_type, len(services), json.dumps(services)))
         provision_conn.commit()
         if done_now is not None:

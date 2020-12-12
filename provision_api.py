@@ -233,21 +233,17 @@ services_buildings: pd.DataFrame
 blocks: pd.DataFrame
 city_hierarchy: pd.DataFrame
 
-def compute_atomic_provision(social_group: str, living_situation: str, city_function: str, coords: Tuple[float, float],
+def compute_atomic_provision(social_group: str, living_situation: str, service: str, coords: Tuple[float, float],
         provision_conn: psycopg2.extensions.connection, houses_conn: psycopg2.extensions.connection, **kwargs) -> Dict[str, Any]:
-    current_needs = needs[(needs['social_group'] == social_group) & (needs['living_situation'] == living_situation) & (needs['city_function'] == city_function)]
-    if current_needs.shape[0] == 0:
-        print(f'No data found for needs (social_group = {social_group}, living_situation = {living_situation}, city_function = {city_function})')
-        raise Exception(f'No data found for needs (social_group = {social_group}, living_situation = {living_situation}, city_function = {city_function})')
-
     walking_time_cost: int
     transport_time_cost: int
     personal_transport_time_cost: int
     intensity: float
     significance: float
-    walking_time_cost, transport_time_cost, personal_transport_time_cost, intensity, significance = map( # type: ignore
-            lambda x: int(x) if isinstance(x, np.int64) else float(x), current_needs.iloc[0][['walking', 'transport', 'car', 'intensity', 'significance']]
-    ) 
+    walking_time_cost, transport_time_cost, personal_transport_time_cost, intensity, significance = experimental_aggregation.get_needs(needs, infrastructure, social_group, living_situation, service)
+    if walking_time_cost == 0 and transport_time_cost == 0 and personal_transport_time_cost == 0 and intensity == 0 and significance == 0:
+        print(f'No data found for needs (social_group = {social_group}, living_situation = {living_situation}, city_function = {service})')
+        raise Exception(f'No data found for needs (social_group = {social_group}, living_situation = {living_situation}, city_function = {service})')
 
     if 'walking_time_cost' in kwargs:
         walking_time_cost = int(kwargs['walking_time_cost'])
@@ -266,7 +262,7 @@ def compute_atomic_provision(social_group: str, living_situation: str, city_func
     target_s_divider = float(kwargs.get('target_s_divider', 6))
     coeff_multiplier = float(kwargs.get('coeff_multiplier', 5))
 
-    if walking_time_cost == 0 and transport_time_cost == 0 and personal_transport_time_cost == 0 and personal_transport_availability_multiplier == 0:
+    if walking_time_cost == 0 and transport_time_cost == 0 and (personal_transport_time_cost == 0 or personal_transport_availability_multiplier == 0):
         return {
             'walking_geometry': json.dumps({'type': 'Polygon', 'coordinates': []}),
             'transport_geometry': json.dumps({'type': 'Polygon', 'coordinates': []}),
@@ -288,11 +284,9 @@ def compute_atomic_provision(social_group: str, living_situation: str, city_func
     walking_geometry, transport_geometry, car_geometry = avaliability.ensure_ready(*coords, walking_time_cost, transport_time_cost, personal_transport_time_cost)
 
     df_target_servs = services_buildings[
-            services_buildings['service_id'].isin(
-                    itertools.chain(*[calculate_services_cnt.count_service(coords, service, walking_time_cost, 'walking', provision_conn, houses_conn) for
-                            service in infrastructure[infrastructure['function'] == city_function]['service']]))
+            services_buildings['service_id'].isin(calculate_services_cnt.count_service(coords, service, walking_time_cost, 'walking', provision_conn, houses_conn))
             &
-            services_buildings['service_type'].isin(infrastructure[infrastructure['function'] == city_function]['service'])
+            (services_buildings['service_type'] == service)
     ]
     df_target_servs = df_target_servs.join(pd.Series(['walking'] * df_target_servs.shape[0], name='availability_type', dtype=str, index=df_target_servs.index))
 
@@ -301,11 +295,9 @@ def compute_atomic_provision(social_group: str, living_situation: str, city_func
     # transport_geometry = avaliability.get_transport(*coords, transport_time_cost)
 
     transport_servs = services_buildings[
-            services_buildings['service_id'].isin(
-                    itertools.chain(*[calculate_services_cnt.count_service(coords, service, transport_time_cost, 'transport', provision_conn, houses_conn) for
-                            service in infrastructure[infrastructure['function'] == city_function]['service']]))
+            services_buildings['service_id'].isin(calculate_services_cnt.count_service(coords, service, transport_time_cost, 'transport', provision_conn, houses_conn))
             &
-            services_buildings['service_type'].isin(infrastructure[infrastructure['function'] == city_function]['service'])
+            (services_buildings['service_type'] == service)
     ]
     transport_servs = transport_servs.set_index('service_id').drop(df_target_servs['service_id'], errors='ignore').reset_index()
     transport_servs = transport_servs.join(pd.Series(['public_transport'] * transport_servs.shape[0], name='availability_type', dtype=str, index=transport_servs.index))
@@ -318,11 +310,9 @@ def compute_atomic_provision(social_group: str, living_situation: str, city_func
     # car_geometry = avaliability.get_car(*coords, personal_transport_time_cost)
     
     car_servs = services_buildings[
-            services_buildings['service_id'].isin(
-                    itertools.chain(*[calculate_services_cnt.count_service(coords, service, personal_transport_time_cost, 'car', provision_conn, houses_conn) for
-                            service in infrastructure[infrastructure['function'] == city_function]['service']]))
+            services_buildings['service_id'].isin(calculate_services_cnt.count_service(coords, service, personal_transport_time_cost, 'car', provision_conn, houses_conn))
             &
-            services_buildings['service_type'].isin(infrastructure[infrastructure['function'] == city_function]['service'])
+            (services_buildings['service_type'] == service)
     ]
     car_servs = car_servs.set_index('service_id').drop(df_target_servs['service_id'], errors='ignore').reset_index()
     car_servs = car_servs.join(pd.Series(['personal_transport'] * car_servs.shape[0], name='availability_type', dtype=str, index=car_servs.index))
@@ -381,13 +371,13 @@ def compute_atomic_provision(social_group: str, living_situation: str, city_func
     }
 
 
-
 def get_aggregation(where: Union[str, Tuple[float, float]], where_type: str, social_group: Optional[str],
         living_situation: Optional[str], city_function: Optional[str], provision_conn: psycopg2.extensions.connection,
         houses_conn: psycopg2.extensions.connection, update: bool = False) -> Dict[str, Union[float, str]]:
     given_vaules = (social_group, living_situation, city_function)
     found_id: Optional[int] = None
     where_column = 'district' if where_type == 'districts' else 'municipality'
+    # city_function: Optional[str] = infrastructure[infrastructure['service'] == service]['function'].iloc[0] if service is not None else None
 
     with provision_conn.cursor() as cur_provision:
         if where_type in ('districts', 'municipalities'):
@@ -672,10 +662,10 @@ def update_global_data() -> None:
                 ' JOIN functional_objects f ON f.id = pf.fun_obj_id'
                 ' JOIN service_types st on f.service_type_id = st.id'
                 ' ORDER BY p.id')
-        services_buildings = pd.DataFrame(cur.fetchall(), columns=('service_id', 'address', 'service_name', 'point', 'power', 'service_type'))
-        services_buildings['point'] = pd.Series(
+        services_buildings = pd.DataFrame(cur.fetchall(), columns=('service_id', 'address', 'service_name', 'location', 'power', 'service_type'))
+        services_buildings['location'] = pd.Series(
             map(lambda geojson: (round(float(geojson[geojson.find('[') + 1:geojson.rfind(',')]), 4), round(float(geojson[geojson.rfind(',') + 1:-2]), 4)),
-                services_buildings['point'])
+                services_buildings['location'])
         )
         cur.execute('SELECT m.id, m.full_name, m.short_name, m.population, d.id, d.full_name, d.short_name, d.population FROM municipalities m'
                 ' JOIN districts d on d.id = m.district_id ORDER BY d.full_name, m.full_name')
@@ -721,31 +711,33 @@ def reload_data() -> Response:
 
 # Сервис возвращает числовую оценку обеспеченности целевой социальной группы в целевой жизненной ситуации сервисами,
 # относящимися к целевой городской функции, в целевой точке (доме)
+@app.route('/api/provision/atomic', methods=['GET'])
 @app.route('/api/provision/atomic/', methods=['GET'])
 def atomic_provision() -> Response:
-    if not ('social_group' in request.args and 'living_situation' in request.args and 'city_function' in request.args and 'point' in request.args):
-        return make_response(jsonify({'error': 'Request must include all of the ("social_group", "living_situation", "city_function", "point") arguments'}), 400)
+    if not ('social_group' in request.args and 'living_situation' in request.args and 'service' in request.args and 'location' in request.args):
+        return make_response(jsonify({'error': 'Request must include all of the ("social_group", "living_situation", "service", "location") arguments'}), 400)
     social_group: str = request.args['social_group'] # type: ignore
     living_situation: str = request.args['living_situation'] # type: ignore
-    city_function: str = request.args['city_function'] # type: ignore
+    service: str = request.args['service'] # type: ignore
     if not (social_group in get_social_groups(to_list=True) and living_situation in get_living_situations(to_list=True) \
-                and city_function in get_city_functions(to_list=True)):
+                and service in get_services(to_list=True)):
         return make_response(jsonify({'error': f"At least one of the ('social_group', 'living_situation', 'city_function') is not in the list of avaliable"
                 f' ({social_group in get_social_groups(to_list=True)}, {living_situation in get_living_situations(to_list=True)},'
-                        f' {city_function in get_city_functions(to_list=True)})'}), 400)
-    coords: Tuple[int, int] = tuple(map(float, request.args['point'].split(','))) # type: ignore
+                        f' {service in get_services(to_list=True)})'}), 400)
+    coords: Tuple[int, int] = tuple(map(float, request.args['location'].split(','))) # type: ignore
 
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': compute_atomic_provision(coords=coords, houses_conn=properties.houses_conn, provision_conn=properties.provision_conn, **request.args)
     }))
 
+@app.route('/api/provision/aggregated', methods=['GET'])
 @app.route('/api/provision/aggregated/', methods=['GET'])
 def aggregated_provision() -> Response:
     social_group: Optional[str] = request.args.get('social_group')
     living_situation: Optional[str] = request.args.get('living_situation')
     city_function: Optional[str] = request.args.get('city_function')
-    target: Optional[str] = request.args.get('target')
+    location: Optional[str] = request.args.get('location')
     if not ((social_group is None or social_group == 'all' or social_group in get_social_groups(to_list=True))
             and (living_situation is None or living_situation == 'all' or living_situation in get_living_situations(to_list=True))
             and (city_function is None or city_function == 'all' or city_function in get_city_functions(to_list=True))):
@@ -757,28 +749,28 @@ def aggregated_provision() -> Response:
     functions: Union[List[str], List[Optional[str]]] = city_functions if city_function == 'all' else [city_function] # type: ignore
     where: List[Union[str, Tuple[float, float]]]
     where_type: str
-    if target is None:
+    if location is None:
         where = ['total']
         where_type = 'total'
-        raise Exception("Getting total aggregaation is unsupported at the moment. You need to set 'target' parameter.")
-    elif target.startswith('inside_'): # type: ignore
-        name = target[7:] # type: ignore
+        raise Exception("Getting total aggregaation is unsupported at the moment. You need to set 'location' parameter.")
+    elif location.startswith('inside_'): # type: ignore
+        name = location[7:] # type: ignore
         if name not in city_hierarchy['district_full_name'].unique():
             return make_response(jsonify({'error': f"'{name}'' should be a district, but it is not in the list"}), 400)
         where_type = 'municipalities'
         where = list(all_houses[all_houses['district'] == name]['municipality'].unique())
-    elif target in city_hierarchy['district_full_name'].unique():
-        where = [target]
+    elif location in city_hierarchy['district_full_name'].unique():
+        where = [location]
         where_type = 'districts'
-    elif target in city_hierarchy['municipality_full_name'].unique():
-        where = [target]
+    elif location in city_hierarchy['municipality_full_name'].unique():
+        where = [location]
         where_type = 'municipalities'
     else:
         try:
-            where = [tuple(map(float, request.args.get('target', type=str).split(',')))] # type: ignore
+            where = [tuple(map(float, request.args.get('location', type=str).split(',')))] # type: ignore
             where_type = 'house'
         except:
-            return make_response(jsonify({'error': f"Cannot find '{target}' in any of the 'districts' or 'municipalities', or parse as a house coordinates"}), 400)
+            return make_response(jsonify({'error': f"Cannot find '{location}' in any of the 'districts' or 'municipalities', or parse as a house coordinates"}), 400)
 
     where_column = 'district' if where_type == 'districts' else 'house' if where_type == 'house' else 'municipality'
     res: List[Dict[str, Dict[str, Any]]] = list()
@@ -798,10 +790,10 @@ def aggregated_provision() -> Response:
                     for now_function in functions:
                         if now_function in ready_functions or launch_aggregation:
                             if now_function not in ready_functions:
-                                print(f'target({target}) + social_group({now_soc_group}) + living_situation({now_situation}) + city_function({now_function}) is missing, aggregating')
+                                print(f'location({location}) + social_group({now_soc_group}) + living_situation({now_situation}) + city_function({now_function}) is missing, aggregating')
                             res.append({
                                 'params': {
-                                    'target': now_where,
+                                    'location': now_where,
                                     'social_group': now_soc_group,
                                     'living_situation': now_situation,
                                     'city_function': now_function,
@@ -815,7 +807,7 @@ def aggregated_provision() -> Response:
                 'social_group': social_group,
                 'living_situation': living_situation,
                 'city_function': city_function,
-                'target': target,
+                'location': location,
                 'where_type': where_type,
                 'launch_aggregation': launch_aggregation
             },
@@ -823,12 +815,13 @@ def aggregated_provision() -> Response:
         }
     }))
    
+@app.route('/api/provision/alternative', methods=['GET'])
 @app.route('/api/provision/alternative/', methods=['GET'])
 def alternative_aggregated_provision():
     social_group: Optional[str] = request.args.get('social_group')
     living_situation: Optional[str] = request.args.get('living_situation')
     service: Optional[str] = request.args.get('service')
-    target: Optional[str] = request.args.get('target')
+    location: Optional[str] = request.args.get('location')
     if not ((social_group is None or social_group == 'all' or social_group in get_social_groups(to_list=True))
             and (living_situation is None or living_situation == 'all' or living_situation in get_living_situations(to_list=True))
             and (service is None or service == 'all' or service in infrastructure['service'].unique())):
@@ -838,25 +831,25 @@ def alternative_aggregated_provision():
     situations: Union[List[str], List[Optional[str]]] = living_situations if living_situation == 'all' else [living_situation] # type: ignore
     services: Union[List[str], List[Optional[str]]] = list(infrastructure['service'].dropna()) if service == 'all' else [service] # type: ignore
     where: List[Union[int, str, Tuple[float, float]]]
-    if target is None:
+    if location is None:
         where = ['city']
-        raise NotImplementedError("Getting city aggregation is unsupported at the moment. You need to set 'target' parameter.")
-    elif target.startswith('inside_'): # type: ignore
-        name = target[7:] # type: ignore
+        raise NotImplementedError("Getting city aggregation is unsupported at the moment. You need to set 'location' parameter.")
+    elif location.startswith('inside_'): # type: ignore
+        name = location[7:] # type: ignore
         if name in city_hierarchy['district_full_name'].unique():
             where = list(all_houses[all_houses['district'] == name]['municipality'].unique())
         elif name in city_hierarchy['municipality_full_name'].unique():
             where = list(blocks[blocks['municipality'] == name].index)
         else:
             return make_response(jsonify({'error': f"'{name}' should be a district, but it is not in the list"}), 400)
-    elif target in city_hierarchy['district_full_name'].unique() or target in city_hierarchy['municipality_full_name'].unique():
-        where = [target]
+    elif location in city_hierarchy['district_full_name'].unique() or location in city_hierarchy['municipality_full_name'].unique():
+        where = [location]
     else:
         try:
-            where = [tuple(map(float, request.args.get('target', type=str).split(',')))] # type: ignore
+            where = [tuple(map(float, request.args.get('location', type=str).split(',')))] # type: ignore
             return make_response(jsonify({'error': 'Alternative aggregation method does not support aggregation on house'}))
         except:
-            return make_response(jsonify({'error': f"Cannot find '{target}' in any of the 'districts' or 'municipalities'"}), 400)
+            return make_response(jsonify({'error': f"Cannot find '{location}' in any of the 'districts' or 'municipalities'"}), 400)
 
     res: List[Dict[str, Dict[str, Any]]] = list()
     for now_where in where:
@@ -865,7 +858,7 @@ def alternative_aggregated_provision():
                 for now_service in services:
                     res.append({
                         'params': {
-                            'target': now_where,
+                            'location': now_where,
                             'social_group': now_soc_group,
                             'living_situation': now_situation,
                             'service': now_service,
@@ -880,12 +873,13 @@ def alternative_aggregated_provision():
                 'social_group': social_group,
                 'living_situation': living_situation,
                 'service': service,
-                'target': target,
+                'location': location,
             },
             'provision': res
         }
     }))
 
+@app.route('/api/provision/ready/houses', methods=['GET'])
 @app.route('/api/provision/ready/houses/', methods=['GET'])
 def ready_houses() -> Response:
     social_group: Optional[str] = request.args.get('social_group')
@@ -922,6 +916,7 @@ def ready_houses() -> Response:
         }
     }))
 
+@app.route('/api/provision/ready/districts', methods=['GET'])
 @app.route('/api/provision/ready/districts/', methods=['GET'])
 def ready_districts() -> Response:
     social_group: Optional[str] = request.args.get('social_group')
@@ -955,6 +950,7 @@ def ready_districts() -> Response:
         }
     }))
 
+@app.route('/api/provision/ready/municipalities', methods=['GET'])
 @app.route('/api/provision/ready/municipalities/', methods=['GET'])
 def ready_municipalities() -> Response:
     social_group: Optional[str] = request.args.get('social_group')
@@ -988,7 +984,8 @@ def ready_municipalities() -> Response:
         }
     }))
     
-@app.route('/api/houses/')
+@app.route('/api/houses', methods=['GET'])
+@app.route('/api/houses/', methods=['GET'])
 def houses_in_square() -> Response:
     if 'firstPoint' not in request.args or 'secondPoint' not in request.args:
         return make_response(jsonify({'error': "'firstPoint' and 'secondPoint' must be provided as query parameters"}), 400)
@@ -1026,6 +1023,7 @@ def get_social_groups(city_function: Optional[str] = None, living_situation: Opt
     else:
         return res
 
+@app.route('/api/relevance/social_groups', methods=['GET'])
 @app.route('/api/relevance/social_groups/', methods=['GET'])
 def relevant_social_groups() -> Response:
     res = get_social_groups(request.args.get('city_function'), request.args.get('living_situation')) # type: pd.DataFrame
@@ -1040,6 +1038,7 @@ def relevant_social_groups() -> Response:
         }
     }))
 
+@app.route('/api/list/social_groups', methods=['GET'])
 @app.route('/api/list/social_groups/', methods=['GET'])
 def list_social_groups() -> Response:
     res = get_social_groups(request.args.get('city_function'), request.args.get('living_situation'), to_list=True) # type: List[str]
@@ -1070,6 +1069,7 @@ def get_city_functions(social_group: Optional[str] = None, living_situation: Opt
     else:
         return res
 
+@app.route('/api/relevance/city_functions', methods=['GET'])
 @app.route('/api/relevance/city_functions/', methods=['GET'])
 def relevant_city_functions() -> Response:
     res = get_city_functions(request.args.get('social_group'), request.args.get('living_situation')) # type: pd.DataFrame
@@ -1084,6 +1084,7 @@ def relevant_city_functions() -> Response:
         }
     }))
 
+@app.route('/api/list/city_functions', methods=['GET'])
 @app.route('/api/list/city_functions/', methods=['GET'])
 def list_city_functions() -> Response:
     res = get_city_functions(request.args.get('social_group'), request.args.get('living_situation'), to_list=True) # type: List[str]
@@ -1095,6 +1096,36 @@ def list_city_functions() -> Response:
                 'living_situation': request.args.get('living_situation')
             },
             'city_functions': res
+        }
+    }))
+
+def get_services(social_group: Optional[str] = None, living_situation: Optional[str] = None, to_list: bool = False) -> Union[List[str], pd.DataFrame]:
+    res = needs[(needs['significance'] > 0) & (needs['intensity'] > 0) & needs['city_function'].isin(infrastructure['function'].dropna().unique())]
+    if social_group is None:
+        res = res.drop(['social_group', 'significance'], axis=True)
+    else:
+        res = res[res['social_group'] == social_group].drop('social_group', axis=True)
+    if living_situation is None:
+        res = res.drop(['living_situation', 'intensity'], axis=True)
+    else:
+        res = res[res['living_situation'] == living_situation].drop('living_situation', axis=True)
+    if to_list:
+        return list(infrastructure[infrastructure['function'].isin(res['city_function'].unique())]['service'].unique())
+    else:
+        return res
+
+@app.route('/api/list/services', methods=['GET'])
+@app.route('/api/list/services/', methods=['GET'])
+def list_services() -> Response:
+    res = get_services(request.args.get('social_group'), request.args.get('living_situation'), to_list=True) # type: List[str]
+    return make_response(jsonify({
+        '_links': {'self': {'href': request.path}},
+        '_embedded': {
+            'params': {
+                'social_group': request.args.get('social_group'),
+                'living_situation': request.args.get('living_situation')
+            },
+            'services': res
         }
     }))
 
@@ -1113,6 +1144,7 @@ def get_living_situations(social_group: Optional[str] = None, city_function: Opt
     else:
         return res
 
+@app.route('/api/relevance/living_situations', methods=['GET'])
 @app.route('/api/relevance/living_situations/', methods=['GET'])
 def relevant_living_situations() -> Response:
     res = get_living_situations(request.args.get('social_group'), request.args.get('city_function')) # type: pd.DataFrame
@@ -1133,6 +1165,7 @@ def relevant_living_situations() -> Response:
         }
     }))
 
+@app.route('/api/list/living_situations', methods=['GET'])
 @app.route('/api/list/living_situations/', methods=['GET'])
 def list_living_situations() -> Response:
     res = get_living_situations(request.args.get('social_group'), request.args.get('city_function'), to_list=True) # type: List[str]
@@ -1147,7 +1180,8 @@ def list_living_situations() -> Response:
         }
     }))
 
-@app.route('/api/list/infrastructures/')
+@app.route('/api/list/infrastructures', methods=['GET'])
+@app.route('/api/list/infrastructures/', methods=['GET'])
 def list_infrastructures() -> Response:
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
@@ -1162,15 +1196,7 @@ def list_infrastructures() -> Response:
         }
     }))
 
-@app.route('/api/list/services/', methods=['GET'])
-def list_services() -> Response:
-    return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
-        '_embedded': {
-            'services': list(infrastructure['service'].dropna().unique())
-        }
-    }))
-
+@app.route('/api/list/districts', methods=['GET'])
 @app.route('/api/list/districts/', methods=['GET'])
 def list_districts() -> Response:
     return make_response(jsonify({
@@ -1180,6 +1206,7 @@ def list_districts() -> Response:
         }
     }))
 
+@app.route('/api/list/municipalities', methods=['GET'])
 @app.route('/api/list/municipalities/', methods=['GET'])
 def list_municipalities() -> Response:
     return make_response(jsonify({
@@ -1189,18 +1216,19 @@ def list_municipalities() -> Response:
         }
     }))
 
-@app.route('/api/list/city_hierarchy/')
+@app.route('/api/list/city_hierarchy', methods=['GET'])
+@app.route('/api/list/city_hierarchy/', methods=['GET'])
 def list_city_hierarchy() -> Response:
     local_hierarchy = city_hierarchy
-    if 'target' in request.args:
-        if request.args['target'] in city_hierarchy['district_full_name'].unique():
-            local_hierarchy = local_hierarchy[local_hierarchy['district_full_name'] == request.args['target']]
-        elif request.args['target'] in city_hierarchy['municipality_full_name'].unique():
-            local_hierarchy = local_hierarchy[local_hierarchy['municipality_full_name'] == request.args['target']]
-        elif request.args['target'].isnumeric():
-            local_hierarchy = local_hierarchy[local_hierarchy['municipality_full_name'] == blocks.loc[int(request.args['target'])]['municipality']]
+    if 'location' in request.args:
+        if request.args['location'] in city_hierarchy['district_full_name'].unique():
+            local_hierarchy = local_hierarchy[local_hierarchy['district_full_name'] == request.args['location']]
+        elif request.args['location'] in city_hierarchy['municipality_full_name'].unique():
+            local_hierarchy = local_hierarchy[local_hierarchy['municipality_full_name'] == request.args['location']]
+        elif request.args['location'].isnumeric():
+            local_hierarchy = local_hierarchy[local_hierarchy['municipality_full_name'] == blocks.loc[int(request.args['location'])]['municipality']]
         else:
-            return make_response(jsonify({'error': f"target '{request.args['target']}'' is not found in any of districts, municipalities or blocks"}), 400)
+            return make_response(jsonify({'error': f"location '{request.args['location']}'' is not found in any of districts, municipalities or blocks"}), 400)
     
     districts = [{'id': id, 'full_name': full_name, 'short_name': short_name, 'population': population}
             for _, (id, full_name, short_name, population) in
@@ -1221,7 +1249,7 @@ def list_city_hierarchy() -> Response:
             'districts': districts,
             'parameters': {
                 'include_blocks': 'include_blocks' in request.args,
-                'target': request.args.get('target')
+                'location': request.args.get('location')
             }
         }
     }))
@@ -1230,21 +1258,21 @@ def list_city_hierarchy() -> Response:
 @app.route('/api/', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2020-12-06',
+        'version': '2020-12-12',
         '_links': {
             'self': {
                 'href': request.path
             },
             'atomic_provision': {
-                'href': '/api/provision/atomic/{?social_group,living_situation,city_function,point}',
+                'href': '/api/provision/atomic/{?social_group,living_situation,city_function,location}',
                 'templated': True
             },
             'aggregated-provision': {
-                'href': '/api/provision/aggregated/{?social_group,living_situation,city_function,target}',
+                'href': '/api/provision/aggregated/{?social_group,living_situation,city_function,location}',
                 'templated': True
             },
             'alternative-aggregated-provision': {
-                'href': '/api/provision/alternative/{?social_group,living_situation,service,target,return_debug_info}',
+                'href': '/api/provision/alternative/{?social_group,living_situation,service,location,return_debug_info}',
                 'templated': True
             },
             'get-houses': {
@@ -1263,8 +1291,12 @@ def api_help() -> Response:
                 'href': '/api/list/city_functions/{?social_group,living_situation}',
                 'templated': True
             },
+            'list-services': {
+                'href': '/api/list/services/{?social_group,living_situation}',
+                'templated': True
+            },
             'list-city_hierarchy' :{
-                'href': '/api/list/city_hierarchy/{?include_blocks,target}',
+                'href': '/api/list/city_hierarchy/{?include_blocks,location}',
                 'templated': True
             },
             'relevant-social_groups': {
@@ -1287,9 +1319,6 @@ def api_help() -> Response:
             },
             'list-municipalities': {
                 'href': '/api/list/municipalities/'
-            },
-            'list-services': {
-                'href': '/api/list/services/'
             },
             'ready_aggregations_houses': {
                 'href': '/api/provision/ready/houses/{?social_group,living_situation,city_function,house}',

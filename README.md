@@ -46,13 +46,13 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -T,--transport_model_endpoint \<str\> - tranaport_model_endpoint
 * -S,--aggregate_target \<str\>- aggregation_target
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2020-12-06)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2020-12-12)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2020-12-06 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2020-12-12 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2020-12-06`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2020-12-06`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2020-12-12`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2020-12-12`  
       Ensure that:
         1. _/etc/postgresql/12/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/12/main/pg_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
@@ -71,17 +71,17 @@ At this moment there are endpoints:
 * **/api**: returns HAL description of API provided.
 * **/api/provision/atomic**: returns atomic provision value, walking, public transport and personal transport availability geometry,
   and services inside of them. Takes parameters by query. You must set `social_group` for social group,
-  `city_function` for city city_function, `living_situation` for living living_situation and `point` for coordinates of the house.
-  Point format is `latitude,longitude`.  
+  `city_function` for city city_function, `living_situation` for living living_situation and `location` for coordinates of the house.
+  Location format is `latitude,longitude`.  
   Also you can set some of the calculation parameters by setting values: *walking_time_cost*, *transport_time_cost*, *personal_transport_time_cost*,
   *walking_availability*, *significance*, *intensity*, *public_transport_availability_multiplier*, *personal_transport_availability_multiplier*, *max_target_s*,
   *target_s_divider*, *coeff_multiplier*.
 * **/api/provision/aggregated**: returns the aggregated provision value. Takes parameters by query. You can set: `social_group` for
-  social group or "all", `city_function` for city city_function or "all", `living_situation` for living living_situation or "all", `region` for district,
-  municipality or house (format: latitude,longitude). `region` can be also "inside_\<district\>" to list all of the municipalities inside the given district
-* **/api/provision/alternative**: returns alternative provision aggregation value for a given parameters. You can set: `social_group` for
-  social group or "all", `service` for city service or "all", `living_situation` for living living_situation or "all", `region` for district,
-  municipality or house (format: latitude,longitude). `region` can be also "inside_\<district\>" to list all of the municipalities inside the given district.
+  social group or "all", `city_function` for city city_function or "all", `living_situation` for living living_situation or "all", `location` for district,
+  municipality or house (format: latitude,longitude). `location` can be also "inside_\<district\>" to list all of the municipalities inside the given district
+* **/api/provision/alternative**: returns alternative provi sion aggregation value for a given parameters. You can set: `social_group` for
+  social group or "all", `service` for city service or "all", `living_situation` for living living_situation or "all", `location` for district,
+  municipality or house (format: latitude,longitude). `location` can be also "inside_\<district\>" to list all of the municipalities inside the given district.
   You can also set `return_debug_info` parameter to get results of inner calculations
 * **/api/provision/ready/houses**: returns the list of already aggregated by houses provision values.
   Takes parameters by query. You can set `social_group`, `city_function`, `living_situation` or `house` parameter to specify the request.
@@ -118,15 +118,15 @@ At this moment there are endpoints:
       "href": "/api/"
     },
     "atomic_provision": {
-      "href": "/api/provision/atomic/{?social_group,living_situation,city_function,point}",
+      "href": "/api/provision/atomic/{?social_group,living_situation,city_function,location}",
       "templated": true
     },
     "aggregated-provision": {
-      "href": "/api/provision/aggregated/{?social_group,living_situation,city_function,region}",
+      "href": "/api/provision/aggregated/{?social_group,living_situation,city_function,location}",
       "templated": true
     },
     "alternative-aggregated-provision": {
-      "href": "/api/provision/alternative/{?social_group,living_situation,service,region,return_debug_info}",
+      "href": "/api/provision/alternative/{?social_group,living_situation,service,location,return_debug_info}",
       "templated": true
     },
     "list-social_groups": {
@@ -154,7 +154,7 @@ At this moment there are endpoints:
       "href": "/api/list/municipalities/"
     },
     "list-city_hierarchy": {
-      "href": "/api/list/city_hierarchy/{?include_blocks,target}",
+      "href": "/api/list/city_hierarchy/{?include_blocks,location}",
       "templated": true
     },
     "ready_aggregations_districts": {
@@ -302,7 +302,7 @@ At this moment there are endpoints:
   },
   "_links": {
     "self": {
-      "href": "/api/list/regions/"
+      "href": "/api/list/districts/"
     }
   }
 }
@@ -521,7 +521,7 @@ At this moment there are endpoints:
         {
           "address": "service_address",
           "availability": ":service_availability",
-          "point": [
+          "location": [
             ":service_latitude",
             ":service_longitude"
           ],
@@ -566,7 +566,7 @@ At this moment there are endpoints:
       "city_function": ":request_city_function",
       "launch_aggregation": ":launch_aggregation",
       "living_situation": ":request_living_situation",
-      "region": ":request_region",
+      "location": ":request_location",
       "social_group": ":request_social_group",
       "where_type": ":where_type"
     },
@@ -575,7 +575,7 @@ At this moment there are endpoints:
         "params": {
           "city_function": ":result_city_function",
           "living_situation": ":result_living_situation",
-          "region": ":result_region",
+          "location": ":result_location",
           "social_group": ":result_social_group"
         },
         "result": {
@@ -597,11 +597,11 @@ At this moment there are endpoints:
 ```
 
 :request_city_function, :request_living_situation, :request_social_group - string of city function, living situation or social_group, or null or "all"  
-:request_region - district, municipality, house coordinates or "inside_\<district\>" from request  
-:where_type - "municipalities", "districts" or "house" depending on request region  
+:request_location - district, municipality, house coordinates or "inside_\<district\>" from request  
+:where_type - "municipalities", "districts" or "house" depending on request location  
 :launch_aggregation - boolean from request  
 :city_function, :living_situation, :social_group - string of city function, living situation or social_group  
-:result_region - district, municipality or house coordinates  
+:result_location - district, municipality or house coordinates  
 :result_intensity, :result_significance - integer from 1 to 10  
 :result_provision - float from 0.0 to 5.0  
 :time_done - time when aggregation was completed
@@ -615,7 +615,7 @@ At this moment there are endpoints:
       "social_group": ":social_group",
       "living_situation": ":living_situation",
       "service": ":service",
-      "region": ":target_name"
+      "location": ":target_name"
     },
     "provision": [
       {
@@ -623,7 +623,7 @@ At this moment there are endpoints:
           "social_group": ":social_group",
           "living_situation": ":living_situation",
           "service": ":service",
-          "region": ":target_name"
+          "location": ":target_name"
         },
         "result": {
           "loyalty": ":result_loyalty",
@@ -663,7 +663,7 @@ At this moment there are endpoints:
             "city_service": ":service",
             "living_situation": ":living_situation",
             "social_group": ":social_group",
-            "target": ":target_name"
+            "location": ":target_name"
           }
         },
       },
@@ -698,14 +698,14 @@ At this moment there are endpoints:
   "_embedded": {
     "params": {
       "city_function": ":city_function",
-      "region": ":district",
+      "location": ":district",
       "living_situation": ":living_situation",
       "social_group": ":social_group"
     },
     "result": [
       {
         "city_function": ":res_function",
-        "region": ":res_district",
+        "location": ":res_district",
         "living_situation": ":res_situation",
         "provision": ":provision",
         "social_group": ":res_soc_group"

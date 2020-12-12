@@ -12,7 +12,6 @@ except ModuleNotFoundError:
     print('GeoPandas is missing, blocks initialization will end up with an error')
 import json
 import time
-import itertools
 from typing import Optional, List, Tuple, Dict, Union, Any
 
 class Properties:
@@ -274,7 +273,7 @@ def get_needs(needs: pd.DataFrame, infrastructure: pd.DataFrame, social_group: s
         # print(f'No needs found for social_group = {social_group}, living_situation = {living_situation}, service = {service}')
         return 0, 0, 0, 0, 0.0
     n = n.iloc[0]
-    return n['walking'], n['transport'], n['car'], n['intensity'], n['significance']
+    return int(n['walking']), int(n['transport']), int(n['car']), int(n['intensity']), float(n['significance'])
 
 def get_soc_groups_for_service(needs: pd.DataFrame, infrastructure: pd.DataFrame,
             service: str, living_situation: Optional[str] = None) -> List[str]:
@@ -341,11 +340,11 @@ def aggregate_inner(blocks: pd.DataFrame, needs: pd.DataFrame, infrastructure: p
                     debug['social_group'] = social_group
                     debug['living_situation'] = living_situation
                     debug['service'] = service
-                    debug['walking_cost'] = int(walking)
-                    debug['public_transport_cost'] = int(transport)
-                    debug['personal_transport_cost'] = int(car)
-                    debug['intensity'] = float(intensity)
-                    debug['significance'] = float(significance)
+                    debug['walking_cost'] = walking
+                    debug['public_transport_cost'] = transport
+                    debug['personal_transport_cost'] = car
+                    debug['intensity'] = intensity
+                    debug['significance'] = significance
                 if walking == 0 and transport == 0 and car == 0 or intensity == 0 or significance == 0:
                     if return_debug_info:
                         debug['result'] = 'skipped'
@@ -570,7 +569,6 @@ if __name__ == '__main__':
                 ' JOIN city_functions f ON f.id = v.city_function_id')
         tmp = pd.DataFrame(cur.fetchall(), columns=('social_group', 'city_function', 'significance'))
         needs = needs.merge(tmp, on=['social_group', 'city_function'], how='inner')
-
 
         cur.execute('SELECT i.name, f.name, s.name from city_functions f JOIN infrastructure_types i ON i.id = f.infrastructure_type_id'
                 ' JOIN service_types s ON s.city_function_id = f.id ORDER BY i.name,f.name,s.name;')
