@@ -57,12 +57,12 @@ class Properties:
         return self._provision_conn
 
     def close(self):
-        if self.houses_conn is not None:
+        if self.houses_conn is not None and not self._houses_conn.closed:
             self._houses_conn.close()
-        if self._provision_conn is not None:
+        if self._provision_conn is not None and not self._provision_conn.closed:
             self._provision_conn.close()
 
-def print_stats(pipe: Connection, start_time: float, done_now: Value, done_total: Value, timeout: Union[int, float] = 10) -> None:
+def print_stats(pipe: Connection, start_time: float, done_now, done_total, timeout: Union[int, float] = 10) -> None:
     while not (pipe.poll() or pipe.closed):
         passed = int(time.time() - start_time)
         if passed == 0:
@@ -75,7 +75,7 @@ def print_stats(pipe: Connection, start_time: float, done_now: Value, done_total
 
 def count_service(house: Union[Tuple[float, float, float], Tuple[float, float]], service: str, t: int,
         avail_type: str, provision_conn: psycopg2.extensions.connection, houses_conn: Optional[psycopg2.extensions.cursor] = None,
-        services_buildings: Optional[gpd.GeoDataFrame] = None, done_now: Optional[Value] = None, done_total: Optional[Value] = None) -> List[int]:
+        services_buildings: Optional[gpd.GeoDataFrame] = None, done_now = None, done_total = None) -> List[int]:
     assert houses_conn is not None or services_buildings is not None, 'connection to houses database or services_buildings must be provided'
     if t == 0:
         return []
@@ -198,7 +198,7 @@ if __name__ == '__main__':
     parser.add_argument('-hW', '--houses_db_pass', action='store', dest='houses_db_pass',
                         help=f'database user password [default: {properties.houses_db_pass}]', type=str)
     parser.add_argument('-g', '--geometry_utility', action='store', dest='geometry_utility',
-                        help=f'geometry testing utility: "phapely" (if installed) or "postgis" [default: shapely]', type=str, default='shapely')
+                        help=f'geometry testing utility: "shapely" (if installed) or "postgis" [default: shapely]', type=str, default='shapely')
     parser.add_argument('-t', '--threads', action='store', dest='threads',
                         help=f'threads (processes) number for calculations [default: 8]', type=int, default=8)
     args = parser.parse_args()
@@ -260,16 +260,16 @@ if __name__ == '__main__':
 
 
     with properties.houses_conn.cursor() as cur:
-        cur.execute(f'SELECT ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float, ROUND(ST_Y(ST_Centroid(geometry))::numeric, 3)::float, id FROM houses where district_id = (SELECT id from districts where full_name = %s)', ('Петроградский район',))
+        cur.execute(f'SELECT DISTINCT ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float, ROUND(ST_Y(ST_Centroid(geometry))::numeric, 3)::float, id FROM houses where district_id = (SELECT id from districts where full_name = %s)', ('Центральный район',))
         houses: List[Tuple[float, float]] = list(cur.fetchall())
 
         cur.execute('SELECT DISTINCT name from service_types')
         services: List[str] = list(map(lambda x: x[0], cur.fetchall()))
 
-        cur.execute('CREATE MATERIALIZED VIEW IF NOT EXISTS all_services AS SELECT p.id, p.geometry, p.description, f.name, f.opening_hours, f.website,'
+        cur.execute('CREATE MATERIALIZED VIEW IF NOT EXISTS all_services AS SELECT p.id as phys_id, f.id as func_id, p.geometry, p.description, f.name, f.opening_hours, f.website,'
                 '    f.phone, f.infrastructure_type_id, b.address, b.year_construct, b.year_repair,'
                 '    b.floors, b.height, b.basement_area, b.project_type, bt.name AS basement_type, ft.name AS floor_type,'
-                '    pc.name AS pollution_category, f.capacity'
+                '    pc.name AS pollution_category, f.capacity, st.name as service_type'
                 ' FROM functional_objects f'
                 '    JOIN service_types st ON f.service_type_id = st.id'
                 '    JOIN phys_objs_fun_objs pf ON f.id = pf.fun_obj_id'

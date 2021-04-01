@@ -8,18 +8,55 @@ import traceback
 import requests
 import threading
 import time
-import sqlite3
 import os
 
 class Properties:
-    def __init__(self, db_addr: str, db_port: int, db_name: str, db_user: str, db_pass: str, transport_model_api_endpoint: str, sqlite3_filename: str):
-        self.db_addr = db_addr
-        self.db_port = db_port
-        self.db_name = db_name
-        self.db_user = db_user
-        self.db_pass = db_pass
-        self.transport_model_api_endpoint = transport_model_api_endpoint
-        self.sqlite3_filename = sqlite3_filename
+    def __init__(
+            self, provision_db_addr: str, provision_db_port: int, provision_db_name: str, provision_db_user: str, provision_db_pass: str,
+            houses_db_addr: str, houses_db_port: int, houses_db_name: str, houses_db_user: str, houses_db_pass: str,
+            walking_api_endpoint: str, transport_api_endpoint: str, car_api_endpoint: str):
+        self.provision_db_addr = provision_db_addr
+        self.provision_db_port = provision_db_port
+        self.provision_db_name = provision_db_name
+        self.provision_db_user = provision_db_user
+        self.provision_db_pass = provision_db_pass
+        self.houses_db_addr = houses_db_addr
+        self.houses_db_port = houses_db_port
+        self.houses_db_name = houses_db_name
+        self.houses_db_user = houses_db_user
+        self.houses_db_pass = houses_db_pass
+
+        self.walking_api_endpoint = walking_api_endpoint
+        self.transport_api_endpoint = transport_api_endpoint
+        self.car_api_endpoint = car_api_endpoint
+
+        self._houses_conn: Optional[psycopg2.extensions.connection] = None
+        self._provision_conn: Optional[psycopg2.extensions.connection] = None
+    @property
+    def provision_conn_string(self) -> str:
+        return f'host={self.provision_db_addr} port={self.provision_db_port} dbname={self.provision_db_name}' \
+                f' user={self.provision_db_user} password={self.provision_db_pass}'
+    @property
+    def houses_conn_string(self) -> str:
+        return f'host={self.houses_db_addr} port={self.houses_db_port} dbname={self.houses_db_name}' \
+                f' user={self.houses_db_user} password={self.houses_db_pass}'
+    @property
+    def houses_conn(self):
+        if self._houses_conn is None or self._houses_conn.closed:
+            self._houses_conn = psycopg2.connect(self.houses_conn_string)
+        return self._houses_conn
+            
+    @property
+    def provision_conn(self):
+        if self._provision_conn is None or self._provision_conn.closed:
+            self._provision_conn = psycopg2.connect(self.provision_conn_string)
+        return self._provision_conn
+
+    def close(self):
+        if self.houses_conn is not None and not self._houses_conn.closed:
+            self._houses_conn.close()
+        if self._provision_conn is not None and not self._provision_conn.closed:
+            self._provision_conn.close()
 
 class Stats:
     def __init__(self, total: int, summary: int):
@@ -67,67 +104,163 @@ class Stats:
 
 properties: Properties
 
-def get_walking(lat: float, lan: float, t: int, stats: Stats, timeout=60):
-    done_now, errors, current, summary, total = stats.get_all()
-    print(f'{time.ctime()}: getting walking   ({lat:<6}, {lan:<6}, {t:2}): {summary:<6} of {total:<6} are done ({done_now:<6} now, {current:<6} current, {errors:<5} errors)')
-    data = json.dumps(
-            requests.get(f'http://galton.urbica.co/api/foot/?lng={lat}&lat={lan}&radius=5&cellSize=0.1&intervals={t}',
-                    timeout=timeout).json()['features'][0]['geometry']
-    )
-    return data
+def _get_walking(lat: float, lan: float, t: Union[int, List[int]], conn: psycopg2.extensions.connection,
+        walking_endpoint: str, timeout: int = 360, stats: Optional[Stats] = None) -> Dict[int, Dict[str, Any]]:
+    if isinstance(t, int):
+        t = [t]
+    if stats is not None:
+        done_now, errors, current, summary, total = stats.get_all()
+        for t_cur in t:
+            print(f'{time.ctime()}: getting walking   ({lat:<6}, {lan:<6}, {t_cur:2}): {summary:<6} of {total:<6} are done ({done_now:<6} now, {current:<6} current, {errors:<5} errors)')
+    walking: Dict[int, Dict[str, Any]] = dict()
+    with conn.cursor() as cur:
+        for feature in requests.get(walking_endpoint.format(lat=lat, lng=lan, t=f'[{",".join(map(str, t))}]'), timeout=timeout).json()['features']:
+        # tmp = requests.get(walking_endpoint.format(lat=lat, lng=lan, t=f'[{",".join(map(str, t))}]'), timeout=timeout).json()
+        # print(tmp)
+        # for feature in tmp['features']:
+            walking[feature['properties']['time']] = feature['geometry']
+            cur.execute('INSERT INTO walking (latitude, longitude, time, geometry) VALUES (%s, %s, %s, ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)) ON CONFLICT DO NOTHING',
+                    (lat, lan, feature['properties']['time'], json.dumps(feature['geometry'])))
+        conn.commit()
+        # print(walking)
+    return walking
 
+def get_walking(lat: float, lan: float, t: int, conn: psycopg2.extensions.connection, walking_endpoint: str, timeout: int = 20) -> Dict[str, Any]:
+    lat, lan = round(lat, 6), round(lan, 6)
+    with conn.cursor() as cur:
+        cur.execute('SELECT ST_AsGeoJSON(geometry) FROM walking WHERE latitude = %s AND longitude = %s AND time = %s', (lat, lan, t))
+        res = cur.fetchall()
+        if len(res) != 0:
+            return res[0][0]
+        try:
+            geom = _get_walking(lat, lan, t, conn, walking_endpoint, timeout)[t]
+        except requests.exceptions.ConnectTimeout:
+            cur.execute('SELECT geometry, ST_Distance(geometry, ST_SetSRID(ST_MakePoint(%s, %s), 4326)) AS min_distance'
+                    'FROM walking WHERE time = %s ORDER BY 2 LIMIT 1', (lat, lan, t))
+            geom = json.loads(cur.fetchone())
+            if len(res) == 0:
+                return {'type': 'Polygon', 'coordinates': []}
+            return geom
+        return geom
 
-def get_transport(lat: float, lan: float, t: int, stats: Stats, conn: psycopg2.extensions.connection, timeout=240) -> str:
-    cur: psycopg2.extensions.cursor = conn.cursor()
-    done_now, errors, current, summary, total = stats.get_all()
-    print(f'{time.ctime()}: getting transport ({lat:<6}, {lan:<6}, {t:2}): {summary:<6} of {total:<6} are done ({done_now:<6} now, {current:<6} current, {errors:<5} errors)')
-    data = requests.post(properties.transport_model_api_endpoint, timeout=timeout, json=
-        {
-            'source': [lan, lat],
-            'cost': t * 60,
-            'day_time': 46800,
-            'mode_type': 'pt_cost'
-        }
-    ).json()
-    if len(data['features']) == 0:
-        data = 'null'
-    else:
-        cur.execute('SELECT ST_AsGeoJSON(ST_UNION(ARRAY[' + ',\n'.join(map(lambda x: f'ST_GeomFromGeoJSON(\'{json.dumps(x["geometry"])}\')', data['features'])) + ']))')
-        data = cur.fetchall()[0][0]
-    return data
+def _get_transport(lat: float, lan: float, t: Union[int, List[int]], conn: psycopg2.extensions.connection,
+        transport_endpoint: str, timeout: int = 240, stats: Optional[Stats] = None) -> Dict[int, Dict[str, Any]]:
+    if isinstance(t, int):
+        t = [t]
+    transport: Dict[int, Dict[str, Any]] = dict()
+    with conn.cursor() as cur:
+        for t_cur in t:
+            if stats is not None:
+                done_now, errors, current, summary, total = stats.get_all()
+                print(f'{time.ctime()}: getting transport ({lat:<6}, {lan:<6}, {t_cur:2}): {summary:<6} of {total:<6} are done ({done_now:<6} now, {current:<6} current, {errors:<5} errors)')
+            data = requests.post(transport_endpoint, timeout=timeout, json=
+                {
+                    'source': [lan, lat],
+                    'cost': t_cur * 60,
+                    'day_time': 46800,
+                    'mode_type': 'pt_cost'
+                }
+            ).json()
+            if 'features' not in data:
+                print(f'ERROR! "features" is not found in data from transport model service\ndata:\n{data}')
+                geom = {'type': 'Polygon', 'coordinates': []}
+            if len(data['features']) == 0:
+                geom = {'type': 'Polygon', 'coordinates': []}
+            elif len(data['features']) > 1:
+                cur.execute('SELECT ST_AsGeoJSON(ST_UNION(ARRAY[' + ',\n'.join(map(lambda x: f'ST_GeomFromGeoJSON(\'{json.dumps(x["geometry"])}\')', data['features'])) + ']))')
+                geom = json.loads(cur.fetchall()[0][0])
+            else:
+                geom = data['features'][0]['geometry']
+            transport[t_cur] = geom
+            if 'features' in data:
+                cur.execute('INSERT INTO transport (latitude, longitude, time, geometry) VALUES (%s, %s, %s, ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)) ON CONFLICT DO NOTHING',
+                        (lat, lan, t_cur, json.dumps(geom)))
+        conn.commit()
+    return transport
 
-def get_cars(lat: float, lan: float, t: int, stats: Stats, conn: psycopg2.extensions.connection, timeout=240) -> str:
-    cur: psycopg2.extensions.cursor = conn.cursor()
-    done_now, errors, current, summary, total = stats.get_all()
-    print(f'{time.ctime()}: getting car ({lat:<6}, {lan:<6}, {t:2}): {summary:<6} of {total:<6} are done ({done_now:<6} now, {current:<6} current, {errors:<5} errors)')
-    data = requests.post(properties.transport_model_api_endpoint, timeout=timeout, json=
-        {
-            'source': [lan, lat],
-            'cost': t * 60,
-            'day_time': 46800,
-            'mode_type': 'car_cost'
-        }
-    ).json()
-    if len(data['features']) == 0:
-        data = 'null'
-    else:
-        cur.execute('SELECT ST_AsGeoJSON(ST_UNION(ARRAY[' + ',\n'.join(map(lambda x: f'ST_GeomFromGeoJSON(\'{json.dumps(x["geometry"])}\')', data['features'])) + ']))')
-        data = cur.fetchall()[0][0]
-    return data
+def get_transport(lat: float, lan: float, t: int, conn: psycopg2.extensions.connection, transport_endpoint: str, timeout: int = 20) -> Dict[str, Any]:
+    lat, lan = round(lat, 6), round(lan, 6)
+    with conn.cursor() as cur:
+        cur.execute('SELECT ST_AsGeoJSON(geometry) FROM transport WHERE latitude = %s AND longitude = %s AND time = %s', (lat, lan, t))
+        res = cur.fetchall()
+        if len(res) != 0:
+            return res[0][0]
+        try:
+            geom = _get_transport(lat, lan, t, conn, transport_endpoint, timeout)[t]
+        except requests.exceptions.ConnectTimeout:
+            cur.execute('SELECT geometry, ST_Distance(geometry, ST_SetSRID(ST_MakePoint(%s, %s), 4326)) AS min_distance'
+                    'FROM transport WHERE time = %s ORDER BY 2 LIMIT 1', (lat, lan, t))
+            geom = json.loads(cur.fetchone())
+            if len(res) == 0:
+                return {'type': 'Polygon', 'coordinates': []}
+        return geom
+
+def _get_car(lat: float, lan: float, t: Union[int, List[int]], conn: psycopg2.extensions.connection, car_endpoint: str,
+        timeout: int = 240, stats: Optional[Stats] = None) -> Dict[int, Dict[str, Any]]:
+    if isinstance(t, int):
+        t = [t]
+    car: Dict[int, Dict[str, Any]] = dict()
+    with conn.cursor() as cur:
+        for t_cur in t:
+            if stats is not None:
+                done_now, errors, current, summary, total = stats.get_all()
+                print(f'{time.ctime()}: getting car ({lat:<6}, {lan:<6}, {t_cur:2}): {summary:<6} of {total:<6} are done ({done_now:<6} now, {current:<6} current, {errors:<5} errors)')
+            data = requests.post(car_endpoint, timeout=timeout, json=
+                {
+                    'source': [lan, lat],
+                    'cost': t_cur * 60,
+                    'day_time': 46800,
+                    'mode_type': 'car_cost'
+                }
+            ).json()
+            if 'features' not in data:
+                print(f'ERROR! "features" is not found in data from transport model service\ndata:\n{data}')
+                geom = {'type': 'Polygon', 'coordinates': []}
+            if len(data['features']) == 0:
+                geom = {'type': 'Polygon', 'coordinates': []}
+            elif len(data['features']) > 1:
+                print(f'Car availability is more than 1 ({len(data["features"])}) poly: ({lat}, {lan}, {t_cur})')
+                cur.execute('SELECT ST_AsGeoJSON(ST_UNION(ARRAY[' + ',\n'.join(map(lambda x: f'ST_GeomFromGeoJSON(\'{json.dumps(x["geometry"])}\')', data['features'])) + ']))')
+                geom = json.loads(cur.fetchall()[0][0])
+            else:
+                geom = data['features'][0]['geometry']
+            car[t_cur] = geom
+            if 'features' in data:
+                cur.execute('INSERT INTO car (latitude, longitude, time, geometry) VALUES (%s, %s, %s, ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)) ON CONFLICT DO NOTHING',
+                        (lat, lan, t_cur, json.dumps(geom)))
+        conn.commit()
+    return car
+
+def get_car(lat: float, lan: float, t: int, conn: psycopg2.extensions.connection, car_endpoint: str, timeout: int = 20) -> Dict[str, Any]:
+    lat, lan = round(lat, 6), round(lan, 6)
+    with conn.cursor() as cur:
+        cur.execute('SELECT ST_AsGeoJSON(geometry) FROM car WHERE latitude = %s AND longitude = %s AND time = %s', (lat, lan, t))
+        res = cur.fetchall()
+        if len(res) != 0:
+            return res[0][0]
+        try:
+            geom = _get_car(lat, lan, t, conn, car_endpoint, timeout)[t]
+        except requests.exceptions.ConnectTimeout:
+            cur.execute('SELECT geometry, ST_Distance(geometry, ST_SetSRID(ST_MakePoint(%s, %s), 4326)) AS min_distance'
+                    'FROM car WHERE time = %s ORDER BY 2 LIMIT 1', (lat, lan, t))
+            geom = json.loads(cur.fetchone())
+            if len(res) == 0:
+                return {'type': 'Polygon', 'coordinates': []}
+        return geom
 
 
 class ThreadPoolThread(threading.Thread):
-    def __init__(self, inputQueue: Queue, # Queue[Tuple[Callable[[Tuple[float, float, int]], str], float, float, int]],
-            outputQueue: Queue, done: Set[Tuple[float, float, int]], stats: Stats, timeout: int = 10, **kwargs): # Queue[Tuple[float, float, int, str]]
+    def __init__(self, inputQueue: Queue, done: Set[Tuple[float, float, int]],
+            conn: psycopg2.extensions.connection, endpoint: str, request_timeout: int = 240, timeout: int = 10, stats: Optional[Stats] = None):
         super().__init__()
         self.inputQueue = inputQueue
-        self.outputQueue = outputQueue
         self._stopping = False
         self.done = done
-        self.stats = stats
+        self.conn = conn
+        self.endpoint = endpoint
+        self.request_timeout = request_timeout
         self.timeout = timeout
-        if 'conn' in kwargs:
-            self.conn = conn
+        self.stats = stats
 
     def stop(self):
         self._stopping = True
@@ -136,143 +269,67 @@ class ThreadPoolThread(threading.Thread):
         while not self._stopping:
             try:
                 val = self.inputQueue.get(True, timeout=self.timeout)
-                self.stats.inc_current()
                 task, lat, lan, t = val
+                if isinstance(t, list):
+                    for _ in range(len(t)):
+                        self.stats.inc_current()
+                else:
+                    self.stats.inc_current()
                 errors = 0
                 while True:
                     try:
-                        if 'conn' in dir(self):
-                            self.outputQueue.put((lat, lan, t, task(lat, lan, t, self.stats, conn=self.conn)))
+                        task(lat, lan, t, self.conn, self.endpoint, self.request_timeout, self.stats)
+                        if isinstance(t, list):
+                            for t_cur in t:
+                                self.stats.inc_done()
+                                self.done.add((lat, lan, t_cur))
                         else:
-                            self.outputQueue.put((lat, lan, t, task(lat, lan, t, self.stats)))
-                        self.stats.inc_done()
-                        self.done.add((lat, lan, t))
+                            self.stats.inc_done()
+                            self.done.add((lat, lan, t))
                         break
-                    except requests.exceptions.ConnectTimeout as ex:
-                        errors += 1
-                        if self._stopping:
-                            break
-                        if errors > 4:
-                            print(f'Request failed, dropping task (Timeout): error #{errors} / 5')
-                            self.stats.inc_errors()
-                            break
-                        else:
-                            print(f'Request failed, waiting 20 seconds and trying again (Timeout): error #{errors} / 5')
-                            time.sleep(20)
                     except Exception as ex:
                         errors += 1
-                        traceback.print_exc()
+                        # if not (isinstance(ex, requests.exceptions.ConnectTimeout)):
+                        #     traceback.print_exc()
                         if self._stopping:
                             break
+                        if isinstance(ex, psycopg2.Error):
+                            self.conn.rollback()
                         if errors > 4:
-                            print(f'Request failed, dropping task (Exception: {repr(ex)}): error #{errors} / 5')
+                            if isinstance(ex, requests.exceptions.ConnectTimeout):
+                                print(f'Request failed, dropping task (Timeout): error #{errors} / 5')
+                            else:
+                                print(f'Request failed, dropping task (Exception: {repr(ex)}): error #{errors} / 5')
                             self.stats.inc_errors()
                             break
                         else:
-                            print(f'Request failed, waiting 20 seconds and trying again (Exception: {repr(ex)}): error #{errors} / 5')
+                            if isinstance(ex, requests.exceptions.ConnectTimeout):
+                                print(f'Request failed, waiting 20 seconds and trying again (Timeout): error #{errors} / 5')
+                            else:
+                                print(f'Request failed, waiting 20 seconds and trying again (Exception: {repr(ex)}): error #{errors} / 5')
                             time.sleep(20)
             except Empty:
                 pass
 
-
-class SavingThread(threading.Thread):
-    def __init__(self, **kwargs: Queue): # Queue[Tuple[float, float, int, str]
-        super().__init__()
-        self.queues = kwargs
-        self._stopping = False
-
-    def run(self):
-        walking_queue = self.queues['walking']
-        transport_queue = self.queues['transport']
-        car_queue = self.queues['car']
-        with sqlite3.connect(properties.sqlite3_filename) as conn_sl3:
-            cur_sl3 = conn_sl3.cursor()
-            while not self._stopping:
-                try:
-                    res = []
-                    res.append(walking_queue.get(timeout=5))
-                    l = walking_queue.qsize()
-                    try:
-                        while len(res) < max(15, l):
-                            res.append(walking_queue.get(timeout=5))
-                    except Empty:
-                        pass
-                    for lat, lan, t, geometry in res:
-                        try:
-                            cur_sl3.execute(f"insert into walking   (latitude, longitude, time, geometry) values ({lat}, {lan}, {t}, '{geometry}')")
-                            print(f"insert into walking   (latitude, longitude, time, geometry) values ({lat:<6}, {lan:<6}, {t:2}, '...')")
-                        except sqlite3.IntegrityError:
-                            print(f"insert into walking   (latitude, longitude, time, geometry) values ({lat:<6}, {lan:<6}, {t:2}, '...') FAILED")
-                except Empty:
-                    pass
-                print('Done saving walking, now transport')
-                try:
-                    res = []
-                    res.append(transport_queue.get(timeout=5))
-                    l = transport_queue.qsize()
-                    try:
-                        while len(res) < max(15, l):
-                            res.append(transport_queue.get(timeout=5))
-                    except Empty:
-                        pass
-                    for lat, lan, t, geometry in res:
-                        try:
-                            cur_sl3.execute(f"insert into transport (latitude, longitude, time, geometry) values ({lat}, {lan}, {t}, '{geometry}')")
-                            print(f"insert into transport (latitude, longitude, time, geometry) values ({lat:<6}, {lan:<6}, {t:2}, '...')")
-                        except sqlite3.IntegrityError:
-                            print(f"insert into transport (latitude, longitude, time, geometry) values ({lat:<6}, {lan:<6}, {t:2}, '...') FAILED")
-                except Empty:
-                    pass
-                print('Done saving transport, now car')
-                try:
-                    res = []
-                    res.append(car_queue.get(timeout=5))
-                    l = car_queue.qsize()
-                    try:
-                        while len(res) < max(15, l):
-                            res.append(car_queue.get(timeout=5))
-                    except Empty:
-                        pass
-                    for lat, lan, t, geometry in res:
-                        try:
-                            cur_sl3.execute(f"insert into car (latitude, longitude, time, geometry) values ({lat}, {lan}, {t}, '{geometry}')")
-                            print(f"insert into car (latitude, longitude, time, geometry) values ({lat:<6}, {lan:<6}, {t:2}, '...')")
-                        except sqlite3.IntegrityError:
-                            print(f"insert into car (latitude, longitude, time, geometry) values ({lat:<6}, {lan:<6}, {t:2}, '...') FAILED")
-                except Empty:
-                    pass
-                conn_sl3.commit()
-        for q in self.queues.values():
-            try:
-                while True:
-                    q.get_nowait()
-            except Empty:
-                pass
-        print(f'{time.ctime()}: Saving is finished')
-
-    def stop(self):
-        self._stopping = True
-
 class ThreadPool:
-    def __init__(self, n: int, resultQueue: Queue, done: Set[Tuple[float, float, int]], stats: Stats, **kwargs):
+    def __init__(self, n: int, done: Set[Tuple[float, float, int]], conn: psycopg2.extensions.connection, endpoint: str,
+            request_timeout: int = 240, timeout: int = 10, stats: Optional[Stats] = None):
         self.n = n
-        self.stats = stats
         self.done = done
-        self.tasks_queue: Queue = Queue() # Queue[Tuple[Callable[[float, float, int], str], float, float, int]]
-        self.results_queue = resultQueue
+        self.conn = conn
+        self.tasks_queue: Queue = Queue(n * 2)
         self.threads: List[ThreadPoolThread] = []
-        if 'conn' in kwargs:
-            self.conn = kwargs['conn']
+        self.endpoint = endpoint
+        self.request_timeout = request_timeout
+        self.timeout = timeout
+        self.stats = stats
 
     def start(self):
         for _ in range(self.n):
-            if 'conn' in dir(self):
-                self.threads.append(ThreadPoolThread(self.tasks_queue, self.results_queue, self.done, self.stats, conn=self.conn))
-            else:
-                self.threads.append(ThreadPoolThread(self.tasks_queue, self.results_queue, self.done, self.stats))
+            self.threads.append(ThreadPoolThread(self.tasks_queue, self.done, self.conn, self.endpoint, self.request_timeout, self.timeout, stats=self.stats))
             self.threads[-1].start()
 
-    def add(self, task: Callable[[float, float, int], str], lat: float, lan: float, t: int):
+    def add(self, task: Callable[[float, float, int, psycopg2.extensions.connection, str, int, Stats], str], lat: float, lan: float, t: int):
         self.tasks_queue.put((task, lat, lan, t))
         
     def stop(self):
@@ -281,11 +338,6 @@ class ThreadPool:
         try:
             while True:
                 self.tasks_queue.get_nowait()
-        except Empty:
-            pass
-        try:
-            while True:
-                self.results_queue.get_nowait()
         except Empty:
             pass
             
@@ -298,11 +350,10 @@ class ThreadPool:
 
 
 class WalkingThread(threading.Thread):
-    def __init__(self, houses: List[Tuple[float, float]], times: List[int], result_queue: Queue, threads: int = 1):
+    def __init__(self, houses: List[Tuple[float, float]], times: List[int], threads: int = 1):
         super().__init__()
         self.houses = houses
         self.times = times
-        self.result_queue = result_queue
         self._stopping = False
         self.threads = threads
 
@@ -310,48 +361,43 @@ class WalkingThread(threading.Thread):
         start_time = time.time()
         done: Set[Tuple[float, float, int]] = set()
 
-        ok = False
-        while not ok:
-            try:
-                with sqlite3.connect(properties.sqlite3_filename) as conn_sl3:
-                    cur_sl3 = conn_sl3.cursor()
-                    done = set(cur_sl3.execute('select latitude, longitude, time from walking').fetchall())
-                    ok = True
-            except Exception:
-                pass
+        with psycopg2.connect(properties.provision_conn_string) as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT latitude, longitude, time FROM walking')
+                done = set(cur.fetchall())
 
-        stats = Stats(len(self.houses) * len(self.times), len(done))
-        print(f'Starting walking  : #houses = {len(self.houses)}, times = {self.times}, (ready: {len(done)})')
-        thread_pool = ThreadPool(self.threads, self.result_queue, done, stats)
-        thread_pool.start()
-        for lat, lan in self.houses:
-            if self._stopping:
-                break
-            for t in self.times:
+            stats = Stats(len(self.houses) * len(self.times), len(done))
+            print(f'Starting walking  : #houses = {len(self.houses)}, times = {self.times}, (ready: {len(done)})')
+            thread_pool = ThreadPool(self.threads, done, conn, properties.walking_api_endpoint, 480, stats=stats)
+            thread_pool.start()
+            for lat, lan in self.houses:
                 if self._stopping:
                     break
-                if (lat, lan, t) in done:
-                    stats.inc_current()
-                    continue
-                thread_pool.add(get_walking, lat, lan, t)
-        while thread_pool.is_alive():
-            time.sleep(10)
-            if self._stopping:
-                print('Stopping walking')
-                thread_pool.stop()
-                thread_pool.join()
-                break
-        print(f'{time.ctime()}: walking is done: {stats.get_done()} in {time.time() - start_time:5.3f} seconds. {stats.get_errors()} errors')
+                need_times: List[int] = []
+                for t in self.times:
+                    if (lat, lan, t) in done:
+                        stats.inc_current()
+                    else:
+                        need_times.append(t)
+                if len(need_times) != 0:
+                    thread_pool.add(_get_walking, lat, lan, need_times)
+            while thread_pool.is_alive():
+                if self._stopping:
+                    print('Stopping walking')
+                    thread_pool.stop()
+                    thread_pool.join()
+                    break
+                time.sleep(10)
+            print(f'{time.ctime()}: walking is done: {stats.get_done()} in {time.time() - start_time:5.3f} seconds ({stats.get_done() / (time.time() - start_time):.2f} per second). {stats.get_errors()} errors')
 
     def stop(self):
         self._stopping = True
 
 class TransportThread(threading.Thread):
-    def __init__(self, houses: List[Tuple[float, float]], times: List[int], result_queue: Queue, threads: int = 1):
+    def __init__(self, houses: List[Tuple[float, float]], times: List[int], threads: int = 1):
         super().__init__()
         self.houses = houses
         self.times = times
-        self.result_queue = result_queue
         self._stopping = False
         self.threads = threads
 
@@ -359,22 +405,14 @@ class TransportThread(threading.Thread):
         start_time = time.time()
         done: Set[Tuple[float, float, int]] = set()
         
-        ok = False
-        while not ok:
-            try:
-                with sqlite3.connect(properties.sqlite3_filename) as conn_sl3:
-                    cur_sl3 = conn_sl3.cursor()
-                    done = set(cur_sl3.execute('select latitude, longitude, time from transport').fetchall())
-                    ok = True
-            except Exception:
-                pass
-
-        with psycopg2.connect(f'host={properties.db_addr} port={properties.db_port} dbname={properties.db_name}'
-                f' user={properties.db_user} password={properties.db_pass}') as conn:
+        with psycopg2.connect(properties.provision_conn_string) as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT latitude, longitude, time FROM transport')
+                done = set(cur.fetchall())
 
             stats = Stats(len(self.houses) * len(self.times), len(done))
             print(f'Starting transport: #houses = {len(self.houses)}, times = {self.times} (ready: {len(done)})')
-            thread_pool = ThreadPool(self.threads, self.result_queue, done, stats, conn=conn)
+            thread_pool = ThreadPool(self.threads, done, conn, properties.transport_api_endpoint, stats=stats)
             thread_pool.start()
             for t in self.times:
                 if self._stopping:
@@ -385,7 +423,7 @@ class TransportThread(threading.Thread):
                     if (lat, lan, t) in done:
                         stats.inc_current()
                         continue
-                    thread_pool.add(get_transport, lat, lan, t)
+                    thread_pool.add(_get_transport, lat, lan, t)
             while thread_pool.is_alive():
                 time.sleep(10)
                 if self._stopping:
@@ -393,17 +431,16 @@ class TransportThread(threading.Thread):
                     thread_pool.stop()
                     thread_pool.join()
                     break
-        print(f'{time.ctime()}: transport is done: {stats.get_done()} in {time.time() - start_time:5.3f} seconds. {stats.get_errors()} errors')
+        print(f'{time.ctime()}: transport is done: {stats.get_done()} in {time.time() - start_time:5.3f} seconds ({stats.get_done() / (time.time() - start_time):.2f} per second). {stats.get_errors()} errors')
 
     def stop(self):
         self._stopping = True
 
 class CarThread(threading.Thread):
-    def __init__(self, houses: List[Tuple[float, float]], times: List[int], result_queue: Queue, threads: int = 1):
+    def __init__(self, houses: List[Tuple[float, float]], times: List[int], threads: int = 1):
         super().__init__()
         self.houses = houses
         self.times = times
-        self.result_queue = result_queue
         self._stopping = False
         self.threads = threads
 
@@ -411,22 +448,14 @@ class CarThread(threading.Thread):
         start_time = time.time()
         done: Set[Tuple[float, float, int]] = set()
         
-        ok = False
-        while not ok:
-            try:
-                with sqlite3.connect(properties.sqlite3_filename) as conn_sl3:
-                    cur_sl3 = conn_sl3.cursor()
-                    done = set(cur_sl3.execute('select latitude, longitude, time from car').fetchall())
-                    ok = True
-            except Exception:
-                pass
+        with psycopg2.connect(properties.provision_conn_string) as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT latitude, longitude, time FROM car')
+                done = set(cur.fetchall())
             
-        with psycopg2.connect(f'host={properties.db_addr} port={properties.db_port} dbname={properties.db_name}'
-                f' user={properties.db_user} password={properties.db_pass}') as conn:
-
             stats = Stats(len(self.houses) * len(self.times), len(done))
             print(f'Starting car: #houses = {len(self.houses)}, times = {self.times} (ready: {len(done)})')
-            thread_pool = ThreadPool(self.threads, self.result_queue, done, stats, conn=conn)
+            thread_pool = ThreadPool(self.threads, done, conn, properties.car_api_endpoint, stats=stats)
             thread_pool.start()
             for t in self.times:
                 if self._stopping:
@@ -437,7 +466,7 @@ class CarThread(threading.Thread):
                     if (lat, lan, t) in done:
                         stats.inc_current()
                         continue
-                    thread_pool.add(get_cars, lat, lan, t)
+                    thread_pool.add(_get_car, lat, lan, t)
             while thread_pool.is_alive():
                 time.sleep(10)
                 if self._stopping:
@@ -445,7 +474,7 @@ class CarThread(threading.Thread):
                     thread_pool.stop()
                     thread_pool.join()
                     break
-        print(f'{time.ctime()}: car is done: {stats.get_done()} in {time.time() - start_time:5.3f} seconds. {stats.get_errors()} errors')
+        print(f'{time.ctime()}: car is done: {stats.get_done()} in {time.time() - start_time:5.3f} seconds ({stats.get_done() / (time.time() - start_time):.2f} per second). {stats.get_errors()} errors')
 
     def stop(self):
         self._stopping = True
@@ -454,7 +483,10 @@ if __name__ == '__main__':
     
     # Default properties settings
 
-    properties = Properties('localhost', 5432, 'citydb', 'postgres', 'postgres', 'http://10.32.1.61:8080/api.v2/isochrones', 'geometry.sqlite')
+    properties = Properties('localhost', 5432, 'provision', 'postgres', 'postgres',
+            'localhost', 5432, 'citydb', 'postgres', 'postgres',
+            'http://10.32.1.62:5002/pedastrian_walk/isochrones?x_from={lng}&y_from={lat}&times={t}',
+            'http://10.32.1.61:8080/api.v2/isochrones', 'http://10.32.1.61:8080/api.v2/isochrones')
     transport_threads = 1
     walking_threads = 1
     car_threads = 1
@@ -463,116 +495,135 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(
         description='Starts the collection of polygons of avaliability')
-    parser.add_argument('-H', '--db_addr', action='store', dest='db_addr',
-                        help=f'postgres host address [default: {properties.db_addr}]', type=str)
-    parser.add_argument('-P', '--db_port', action='store', dest='db_port',
-                        help=f'postgres port number [default: {properties.db_port}]', type=int)
-    parser.add_argument('-d', '--db_name', action='store', dest='db_name',
-                        help=f'postgres database name [default: {properties.db_name}]', type=str)
-    parser.add_argument('-U', '--db_user', action='store', dest='db_user',
-                        help=f'postgres user name [default: {properties.db_user}]', type=str)
-    parser.add_argument('-W', '--db_pass', action='store', dest='db_pass',
-                        help=f'database user password [default: {properties.db_pass}]', type=str)
+    parser.add_argument('-pH', '--provision_db_addr', action='store', dest='provision_db_addr',
+                        help=f'postgres host address [default: {properties.provision_db_addr}]', type=str)
+    parser.add_argument('-pP', '--provision_db_port', action='store', dest='provision_db_port',
+                        help=f'postgres port number [default: {properties.provision_db_port}]', type=int)
+    parser.add_argument('-pd', '--provision_db_name', action='store', dest='provision_db_name',
+                        help=f'postgres database name [default: {properties.provision_db_name}]', type=str)
+    parser.add_argument('-pU', '--provision_db_user', action='store', dest='provision_db_user',
+                        help=f'postgres user name [default: {properties.provision_db_user}]', type=str)
+    parser.add_argument('-pW', '--provision_db_pass', action='store', dest='provision_db_pass',
+                        help=f'database user password [default: {properties.provision_db_pass}]', type=str)
+    parser.add_argument('-hH', '--houses_db_addr', action='store', dest='houses_db_addr',
+                        help=f'postgres host address [default: {properties.houses_db_addr}]', type=str)
+    parser.add_argument('-hP', '--houses_db_port', action='store', dest='houses_db_port',
+                        help=f'postgres port number [default: {properties.houses_db_port}]', type=int)
+    parser.add_argument('-hd', '--houses_db_name', action='store', dest='houses_db_name',
+                        help=f'postgres database name [default: {properties.houses_db_name}]', type=str)
+    parser.add_argument('-hU', '--houses_db_user', action='store', dest='houses_db_user',
+                        help=f'postgres user name [default: {properties.houses_db_user}]', type=str)
+    parser.add_argument('-hW', '--houses_db_pass', action='store', dest='houses_db_pass',
+                        help=f'database user password [default: {properties.houses_db_pass}]', type=str)
     parser.add_argument('-w', '--walking_threads', action='store', dest='walking_threads',
                         help=f'number of threads to request walking geometry [default: {walking_threads}]', type=int)
     parser.add_argument('-t', '--transport_threads', action='store', dest='transport_threads',
                         help=f'number of threads to request transport geometry [default: {transport_threads}]', type=int)
     parser.add_argument('-c', '--car_threads', action='store', dest='car_threads',
                         help=f'number of threads to request car geometry [default: {car_threads}]', type=int)
-    parser.add_argument('-T', '--transport_model_api', action='store', dest='transport_model_api',
-                        help=f'url of endpoint of transport model [default: {properties.transport_model_api_endpoint}]', type=str)
-    parser.add_argument('-f', '--sqlite_file', action='store', dest='sqlite_file',
-                        help=f'path to sqlite database [default: {properties.sqlite3_filename}]', type=str)
+    parser.add_argument('-aW', '--walking_model_api', action='store', dest='walking_model_api',
+                        help=f'url of endpoint of walking model [default: {properties.walking_api_endpoint}]', type=str)
+    parser.add_argument('-aT', '--transport_model_api', action='store', dest='transport_model_api',
+                        help=f'url of endpoint of public transport model [default: {properties.transport_api_endpoint}]', type=str)
+    parser.add_argument('-aC', '--car_model_api', action='store', dest='car_model_api',
+                        help=f'url of endpoint of personal transport model [default: {properties.car_api_endpoint}]', type=str)
     args = parser.parse_args()
 
-    if args.db_addr is not None:
-        properties.db_addr = args.db_addr
-    if args.db_port is not None:
-        properties.db_port = args.db_port
-    if args.db_name is not None:
-        properties.db_name = args.db_name
-    if args.db_user is not None:
-        properties.db_user = args.db_user
-    if args.db_pass is not None:
-        properties.db_pass = args.db_pass
-    if args.sqlite_file is not None:
-        properties.sqlite3_filename = args.sqlite_file
+    if args.provision_db_addr is not None:
+        properties.provision_db_addr = args.provision_db_addr
+    if args.provision_db_port is not None:
+        properties.provision_db_port = args.provision_db_port
+    if args.provision_db_name is not None:
+        properties.provision_db_name = args.provision_db_name
+    if args.provision_db_user is not None:
+        properties.provision_db_user = args.provision_db_user
+    if args.provision_db_pass is not None:
+        properties.provision_db_pass = args.provision_db_pass
+    if args.houses_db_addr is not None:
+        properties.houses_db_addr = args.houses_db_addr
+    if args.houses_db_port is not None:
+        properties.houses_db_port = args.houses_db_port
+    if args.houses_db_name is not None:
+        properties.houses_db_name = args.houses_db_name
+    if args.houses_db_user is not None:
+        properties.houses_db_user = args.houses_db_user
+    if args.houses_db_pass is not None:
+        properties.houses_db_pass = args.houses_db_pass
     if args.walking_threads is not None:
         walking_threads = args.walking_threads
     if args.transport_threads is not None:
         transport_threads = args.transport_threads
     if args.car_threads is not None:
         car_threads = args.car_threads
+    if args.walking_model_api is not None:
+        properties.walking_api_endpoint = args.walking_model_api
+    if args.transport_model_api is not None:
+        properties.transport_api_endpoint = args.transport_model_api
+    if args.car_model_api is not None:
+        properties.car_api_endpoint = args.car_model_api
     
-    with psycopg2.connect(f'host={properties.db_addr} port={properties.db_port} dbname={properties.db_name}'
-            f' user={properties.db_user} password={properties.db_pass}') as conn:
-        cur: psycopg2.extensions.cursor = conn.cursor()
-
-        cur.execute('select walking from needs group by walking order by 1')
+    with properties.houses_conn.cursor() as cur:
+        cur.execute('SELECT DISTINCT walking from needs order by 1')
         walking_time = list(filter(lambda x: x != 0, map(lambda y: y[0], cur.fetchall())))
 
-        cur.execute('select public_transport from needs group by public_transport order by 1')
+        cur.execute('SELECT DISTINCT public_transport from needs order by 1')
         public_transport_time = list(filter(lambda x: x != 0, map(lambda y: y[0], cur.fetchall())))
 
-        cur.execute('select personal_transport from needs group by personal_transport order by 1')
+        cur.execute('SELECT DISTINCT personal_transport from needs order by 1')
         car_time = list(filter(lambda x: x != 0, map(lambda y: y[0], cur.fetchall())))
 
-        cur.execute(f'SELECT distinct ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float, ROUND(ST_Y(ST_Centroid(geometry))::numeric, 3)::float FROM houses')
+        cur.execute(f'SELECT DISTINCT ROUND(ST_X(ST_Centroid(geometry))::numeric, 6)::float, ROUND(ST_Y(ST_Centroid(geometry))::numeric, 6)::float FROM houses')
         houses: List[Tuple[float, float]] = list(map(lambda x: (x[0], x[1]), cur.fetchall()))
 
-    if not os.path.isfile(properties.sqlite3_filename):
-        with open(properties.sqlite3_filename, 'wb'):
-            pass
-
-    with sqlite3.connect(properties.sqlite3_filename) as conn_sl3:
-        cur_sl3 = conn_sl3.cursor()
+    with properties.provision_conn.cursor() as cur:
+        cur.execute('CREATE EXTENSION IF NOT EXISTS postgis')
         for table_name in ('walking', 'transport', 'car'):
-            cur_sl3.execute(
-                f'create table if not exists {table_name} ('
-                '   latitude float not null,'
-                '   longitude float not null,'
-                '   time int not null,'
-                '   geometry varchar,'
+            cur.execute(
+                f'CREATE TABLE IF NOT EXISTS {table_name} ('
+                '   latitude float NOT NULL,'
+                '   longitude float NOT NULL,'
+                '   time int NOT NULL,'
+                '   geometry geometry,'
                 '   primary key(latitude, longitude, time)'
                 ')'
             )
-        conn_sl3.commit()
+        properties.provision_conn.commit()
 
-    print(f'Using postgres connection: {properties.db_user}@{properties.db_addr}:{properties.db_port}/{properties.db_name}')
-
-    saving = SavingThread(walking=Queue(), transport=Queue(), car=Queue())
-    saving.start()
+    print(f'Using postgres connections:')
+    print(f'\t\thouses: {properties.houses_db_user}@{properties.houses_db_addr}:{properties.houses_db_port}/{properties.houses_db_name},')
+    print(f'\t\tprovision: {properties.provision_db_user}@{properties.provision_db_addr}:{properties.provision_db_port}/{properties.provision_db_name},')
 
     walking = None
     transport = None
     car = None
+    Queue(0)
 
     if walking_threads != 0:
-        walking = WalkingThread(houses, walking_time, saving.queues['walking'], walking_threads)
+        walking = WalkingThread(houses, walking_time, walking_threads)
     if transport_threads != 0:
-        transport = TransportThread(houses, public_transport_time, saving.queues['transport'], transport_threads)
+        transport = TransportThread(houses, public_transport_time, transport_threads)
     if car_threads != 0:
-        car = CarThread(houses, car_time, saving.queues['car'], car_threads)
+        car = CarThread(houses, car_time, car_threads)
 
     try:
-        if walking is not None != 0:
+        if walking is not None:
             walking.start()
-        if transport is not None != 0:
+        if transport is not None:
             transport.start()
-        if car is not None != 0:
+        if car is not None:
             car.start()
         
-        if walking is not None != 0:
+        if walking is not None:
             walking.join()
-        if transport is not None != 0:
+        if transport is not None:
             transport.join()
-        if car is not None != 0:
+        if car is not None:
             car.join()
     except:
         print('Stopping threads')
-        for thread in (walking, transport, car, saving):
+        for thread in (walking, transport, car):
             if thread is not None and thread.is_alive():
-                thread.stop() # type: ignore
-        for thread in (walking, transport, car, saving):
+                thread.stop()
+        for thread in (walking, transport, car):
             if thread is not None and thread.is_alive():
                 thread.join()

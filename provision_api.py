@@ -827,9 +827,9 @@ def alternative_aggregated_provision():
             and (service is None or service == 'all' or service in infrastructure['service'].unique())):
         return make_response(jsonify({'error': "At least one of the ('social_group', 'living_situation', 'city_function') is not in the list of avaliable"}), 400)
     
-    soc_groups: Union[List[str], List[Optional[str]]] = social_groups if social_group == 'all' else [social_group] # type: ignore
-    situations: Union[List[str], List[Optional[str]]] = living_situations if living_situation == 'all' else [living_situation] # type: ignore
-    services: Union[List[str], List[Optional[str]]] = list(infrastructure['service'].dropna()) if service == 'all' else [service] # type: ignore
+    soc_groups: Union[List[str], List[Optional[str]]] = get_social_groups(to_list=True) if social_group == 'all' else [social_group] # type: ignore
+    situations: Union[List[str], List[Optional[str]]] = get_living_situations(to_list=True) if living_situation == 'all' else [living_situation] # type: ignore
+    services: Union[List[str], List[Optional[str]]] = get_services(to_list=True) if service == 'all' else [service] # type: ignore
     where: List[Union[int, str, Tuple[float, float]]]
     if location is None:
         where = ['city']
@@ -1258,7 +1258,7 @@ def list_city_hierarchy() -> Response:
 @app.route('/api/', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2020-12-12',
+        'version': '2020-12-12-quickfix',
         '_links': {
             'self': {
                 'href': request.path
