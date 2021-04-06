@@ -249,6 +249,9 @@ if __name__ == '__main__':
 
         properties.provision_conn.commit()
 
+
+    with properties.houses_conn.cursor() as cur:
+
         cur.execute('SELECT DISTINCT walking FROM needs ORDER BY 1')
         walking_time: List[int] = list(filter(lambda x: x != 0, map(lambda y: y[0], cur.fetchall())))
 
@@ -257,9 +260,7 @@ if __name__ == '__main__':
 
         cur.execute('SELECT DISTINCT personal_transport FROM needs ORDER BY 1')
         car_time: List[int] = list(filter(lambda x: x != 0, map(lambda y: y[0], cur.fetchall())))
-
-
-    with properties.houses_conn.cursor() as cur:
+        
         cur.execute(f'SELECT DISTINCT ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float, ROUND(ST_Y(ST_Centroid(geometry))::numeric, 3)::float, id FROM houses where district_id = (SELECT id from districts where full_name = %s)', ('Центральный район',))
         houses: List[Tuple[float, float]] = list(cur.fetchall())
 

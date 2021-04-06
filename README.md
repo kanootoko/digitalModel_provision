@@ -46,13 +46,13 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -T,--transport_model_endpoint \<str\> - tranaport_model_endpoint
 * -S,--aggregate_target \<str\>- aggregation_target
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2020-12-12-quickfix)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-04-06)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2020-12-12-quickfix .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-04-06 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2020-12-12-quickfix`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2020-12-12-quickfix`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-04-06`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-04-06`  
       Ensure that:
         1. _/etc/postgresql/12/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/12/main/pg\_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
@@ -71,27 +71,30 @@ At this moment there are endpoints:
 * **/api**: returns HAL description of API provided.
 * **/api/provision/atomic**: returns atomic provision value, walking, public transport and personal transport availability geometry,
   and services inside of them. Takes parameters by query. You must set `social_group` for social group,
-  `city_function` for city city_function, `living_situation` for living living_situation and `location` for coordinates of the house.
+  `service` for service, `living_situation` for living_situation and `location` for coordinates of the house.
   Location format is `latitude,longitude`.  
   Also you can set some of the calculation parameters by setting values: *walking_time_cost*, *transport_time_cost*, *personal_transport_time_cost*,
   *walking_availability*, *significance*, *intensity*, *public_transport_availability_multiplier*, *personal_transport_availability_multiplier*, *max_target_s*,
   *target_s_divider*, *coeff_multiplier*.
 * **/api/provision/aggregated**: returns the aggregated provision value. Takes parameters by query. You can set: `social_group` for
-  social group or "all", `city_function` for city city_function or "all", `living_situation` for living living_situation or "all", `location` for district,
+  social group or "all", `service` for service or "all", `living_situation` for living_situation or "all", `location` for district,
   municipality or house (format: latitude,longitude). `location` can be also "inside_\<district\>" to list all of the municipalities inside the given district
 * **/api/provision/alternative**: returns alternative provi sion aggregation value for a given parameters. You can set: `social_group` for
-  social group or "all", `service` for city service or "all", `living_situation` for living living_situation or "all", `location` for district,
+  social group or "all", `service` for service or "all", `living_situation` for living_situation or "all", `location` for district,
   municipality or house (format: latitude,longitude). `location` can be also "inside_\<district\>" to list all of the municipalities inside the given district.
   You can also set `return_debug_info` parameter to get results of inner calculations
 * **/api/provision/ready/houses**: returns the list of already aggregated by houses provision values.
-  Takes parameters by query. You can set `social_group`, `city_function`, `living_situation` or `house` parameter to specify the request.
+  Takes parameters by query. You can set `social_group`, `service`, `living_situation` or `house` parameter to specify the request.
 * **/api/provision/ready/districts**: returns the list of already aggregated by districts provision values.
-  Takes parameters by query. You can set `social_group`, `city_function`, `living_situation` or `district` parameter to specify the request.
+  Takes parameters by query. You can set `social_group`, `service`, `living_situation` or `district` parameter to specify the request.
 * **/api/provision/ready/municipalities**: returns the list of already aggregated by municipalities provision values.
-  Takes parameters by query. You can set `social_group`, `city_function`, `living_situation` or `municipality` parameter to specify the request.
-* **/api/list/social_groups**: returns list of social groups. If you specify a city_function and/or living_situation, only relative social groups will be returned
+  Takes parameters by query. You can set `social_group`, `service`, `living_situation` or `municipality` parameter to specify the request.
+* **/api/list/social_groups**: returns list of social groups. If you specify a city_function and/or living_situation,
+  only relative social groups will be returned
 * **/api/list/city_functions**: returns a list of city functions. If you specify a social_group and/or living_situation,
   only relative city functions will be returned
+* **/api/list/services**: returns a list of services. If you specify a social_group and/or living_situation,
+  only relarive services will be returned
 * **/api/list/living_situations**: returns a list of living situations. If you specify a social_group and/or city_function,
   only relative living situations will be returned
 * **/api/relevance/social_groups**: returns a list of social groups. If you specify city_function as a parameter, the output will be limited to social groups
@@ -106,7 +109,6 @@ At this moment there are endpoints:
 * **/api/list/infrastructures**: returns a list of infrastructures with functions list for each of them and with services list for each funtion
 * **/api/list/districts**: returns a list of districts
 * **/api/list/municipalities**: returns a list of municipalities
-* **/api/list/services**: returns a list of services
 * **/api/houses**: returns coordinates of houses inside the square of `firstPoint` and `secondPoint` parameters coordinates.
 
 ### /api
@@ -114,76 +116,77 @@ At this moment there are endpoints:
 ```json
 {
   "_links": {
-    "self": {
-      "href": "/api/"
-    },
-    "atomic_provision": {
-      "href": "/api/provision/atomic/{?social_group,living_situation,city_function,location}",
-      "templated": true
-    },
     "aggregated-provision": {
-      "href": "/api/provision/aggregated/{?social_group,living_situation,city_function,location}",
+      "href": "/api/provision/aggregated/{?social_group,living_situation,service,location}",
       "templated": true
     },
     "alternative-aggregated-provision": {
       "href": "/api/provision/alternative/{?social_group,living_situation,service,location,return_debug_info}",
       "templated": true
     },
-    "list-social_groups": {
-      "href": "/api/list/social_groups/{?city_function,living_situation}",
+    "atomic_provision": {
+      "href": "/api/provision/atomic/{?social_group,living_situation,service,location}",
       "templated": true
     },
-    "list-living_situations": {
-      "href": "/api/list/living_situations/{?social_group,city_function}",
+    "get-houses": {
+      "href": "/api/houses/{?firstPoint,secondPoint}",
       "templated": true
     },
     "list-city_functions": {
       "href": "/api/list/city_functions/{?social_group,living_situation}",
       "templated": true
     },
-    "list-services": {
-      "href": "/api/list/services/"
-    },
-    "list-infrastructures": {
-      "href": "/api/list/infrastructures/"
-    },
-    "list-districts": {
-      "href": "/api/list/districts/"
-    },
-    "list-municipalities": {
-      "href": "/api/list/municipalities/"
-    },
     "list-city_hierarchy": {
       "href": "/api/list/city_hierarchy/{?include_blocks,location}",
       "templated": true
     },
-    "ready_aggregations_districts": {
-      "href": "/api/provision/ready/districts/{?social_group,living_situation,city_function,district}",
+    "list-districts": {
+      "href": "/api/list/districts/"
+    },
+    "list-infrastructures": {
+      "href": "/api/list/infrastructures/"
+    },
+    "list-living_situations": {
+      "href": "/api/list/living_situations/{?social_group,service}",
       "templated": true
     },
-    "ready_aggregations_municipalities": {
-      "href": "/api/provision/ready/municipalities/{?social_group,living_situation,city_function,municipality}",
+    "list-municipalities": {
+      "href": "/api/list/municipalities/"
+    },
+    "list-services": {
+      "href": "/api/list/services/{?social_group,living_situation}",
+      "templated": true
+    },
+    "list-social_groups": {
+      "href": "/api/list/social_groups/{?service,living_situation}",
+      "templated": true
+    },
+    "ready_aggregations_districts": {
+      "href": "/api/provision/ready/districts/{?social_group,living_situation,service,district}",
       "templated": true
     },
     "ready_aggregations_houses": {
-      "href": "/api/provision/ready/houses/{?social_group,living_situation,city_function,house}",
+      "href": "/api/provision/ready/houses/{?social_group,living_situation,service,house}",
       "templated": true
     },
-    "relevant-social_groups": {
-      "href": "/api/relevance/social_groups/{?city_function,living_situation}",
-      "templated": true
-    },
-    "relevant-living_situations": {
-      "href": "/api/relevance/living_situations/{?social_group,city_function}",
+    "ready_aggregations_municipalities": {
+      "href": "/api/provision/ready/municipalities/{?social_group,living_situation,service,municipality}",
       "templated": true
     },
     "relevant-city_functions": {
       "href": "/api/relevance/city_functions/{?social_group,living_situation}",
       "templated": true
     },
-    "get-houses": {
-      "href": "/api/houses/{?firstPoint,secondPoint}",
+    "relevant-living_situations": {
+      "href": "/api/relevance/living_situations/{?social_group,service}",
       "templated": true
+    },
+    "relevant-social_groups": {
+      "href": "/api/relevance/social_groups/{?service,living_situation}",
+      "templated": true
+    },
+    "self": {
+      "href": "/api/"
     }
   },
   "version": ":version"
@@ -198,7 +201,7 @@ At this moment there are endpoints:
 {
   "_embedded": {
     "params": {
-      "city_function": ":city_function",
+      "city_function": ":service",
       "living_situation": ":living_situation"
     },
     "social_groups": [
@@ -215,7 +218,7 @@ At this moment there are endpoints:
 ```
 
 :social_group - string, one of the social groups  
-:city_function - string, one of the city functions; or null if not specified in request  
+:service - string, one of the services; or null if not specified in request  
 :living_situation - string, one of the living situations; or null if not specified in request
 
 ### /api/list/city_functions
@@ -250,7 +253,7 @@ At this moment there are endpoints:
 {
   "_embedded": {
     "services": [
-      ":service_name",
+      ":service",
       <...>
     ]
   },
@@ -262,7 +265,7 @@ At this moment there are endpoints:
 }
 ```
 
-:service_name - string, name of service
+:service - string, name of service
 
 ### /api/list/living_situations
 
@@ -274,7 +277,7 @@ At this moment there are endpoints:
       <...>
     ],
     "params": {
-      "city_function": ":city_function",
+      "city_function": ":service",
       "social_group": ":social_group"
     }
   },
@@ -287,7 +290,7 @@ At this moment there are endpoints:
 ```
 
 :living_situation - string, one of the living situations
-:city_function - string, one of the city functions; or null if not specified in request  
+:service - string, one of the services; or null if not specified in request  
 :social_group - string, one of the social groups; or null if not specified in request
 
 ### /api/list/districts
@@ -415,7 +418,7 @@ At this moment there are endpoints:
 {
   "_embedded": {
     "params": {
-      "city_function": ":city_function",
+      "service": ":service",
       "living_situation": ":living_situation"
     },
     "social_groups": [
@@ -435,7 +438,7 @@ At this moment there are endpoints:
 }
 ```
 
-:city_function, :living_situation, :social_group - string, one of the city functions, living situations or social groups or null  
+:service, :living_situation, :social_group - string, one of the city functions, living situations or social groups or null  
 :significance - float from 0.0 to 1.0, only if :city_function is present  
 :intensity - integer from 0 to 5, only if :city_function and :living_situation is present
 
@@ -496,7 +499,7 @@ At this moment there are endpoints:
 }
 ```
 
-:city_function, :living_situation, :social_group - string, one of the city functions, living situations or social groups or null  
+:city_function, :living_situation, :social_group - string, one of the services, living situations or social groups or null  
 :significance - :significance - float from 0.0 to 1.0  
 :intensity - integer from 0 to 5, only if :social_group and :city_function is present
 
@@ -550,7 +553,7 @@ At this moment there are endpoints:
 :intensity - integer from 1 to 10  
 :service_availability, :significance - float from 0.0 to 1.0  
 :personal_cost, :transport_cost, :walking_cost - integers representing minutes  
-:service_type - string, type of service representing city city_function  
+:service_type - string, type of service representing city service  
 :service_id - integer  
 :service_address, :service_name - string  
 :service_latitude, :service_longitude - float representing coordinates  
@@ -563,7 +566,7 @@ At this moment there are endpoints:
 {
   "_embedded": {
     "params": {
-      "city_function": ":request_city_function",
+      "service": ":request_service",
       "launch_aggregation": ":launch_aggregation",
       "living_situation": ":request_living_situation",
       "location": ":request_location",
@@ -573,7 +576,7 @@ At this moment there are endpoints:
     "provision": [
       {
         "params": {
-          "city_function": ":result_city_function",
+          "service": ":result_service",
           "living_situation": ":result_living_situation",
           "location": ":result_location",
           "social_group": ":result_social_group"
@@ -596,11 +599,11 @@ At this moment there are endpoints:
 }
 ```
 
-:request_city_function, :request_living_situation, :request_social_group - string of city function, living situation or social_group, or null or "all"  
+:request_service, :request_living_situation, :request_social_group - string of city function, living situation or social_group, or null or "all"  
 :request_location - district, municipality, house coordinates or "inside_\<district\>" from request  
 :where_type - "municipalities", "districts" or "house" depending on request location  
 :launch_aggregation - boolean from request  
-:city_function, :living_situation, :social_group - string of city function, living situation or social_group  
+:result_service, :result_living_situation, :result_social_group - string of city function, living situation or social_group  
 :result_location - district, municipality or house coordinates  
 :result_intensity, :result_significance - integer from 1 to 10  
 :result_provision - float from 0.0 to 5.0  
@@ -697,7 +700,7 @@ At this moment there are endpoints:
 {
   "_embedded": {
     "params": {
-      "city_function": ":city_function",
+      "service": ":service",
       "location": ":district",
       "living_situation": ":living_situation",
       "social_group": ":social_group"
@@ -720,7 +723,7 @@ At this moment there are endpoints:
 }
 ```
 
-:city_function, :res_function - string representing city city_function. :city_function can be null in case it was not set in request, otherwise they are the same  
+:service, :res_service - string representing service. :service can be null in case it was not set in request, otherwise they are the same  
 :district, :res_district - string representing district. :district can be null in case it was not set in request, otherwise they are the same  
 :social_group, :res_soc_group - string representing social group. :social_group can be null in case it was not set in request, otherwise they are the same  
 :living_situation, :res_situation - string representing social group. :living_situation can be null in case it was not set in request, otherwise they are the same  
@@ -732,14 +735,14 @@ At this moment there are endpoints:
 {
   "_embedded": {
     "params": {
-      "city_function": ":city_function",
+      "service": ":service",
       "municipality": ":municipality",
       "living_situation": ":living_situation",
       "social_group": ":social_group"
     },
     "result": [
       {
-        "city_function": ":res_function",
+        "service": ":res_service",
         "municipality": ":res_municipality",
         "living_situation": ":res_situation",
         "provision": ":provision",
@@ -755,7 +758,7 @@ At this moment there are endpoints:
 }
 ```
 
-:city_function, :res_function - string representing city city_function. :city_function can be null in case it was not set in request, otherwise they are the same  
+:service, :res_service - string representing service. :service can be null in case it was not set in request, otherwise they are the same  
 :municipality, :res_municipality - string representing municipality. :municipality can be null in case it was not set in request, otherwise they are the same  
 :social_group, :res_soc_group - string representing social group. :social_group can be null in case it was not set in request, otherwise they are the same  
 :living_situation, :res_situation - string representing social group. :living_situation can be null in case it was not set in request, otherwise they are the same

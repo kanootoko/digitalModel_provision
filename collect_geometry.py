@@ -563,13 +563,13 @@ if __name__ == '__main__':
         properties.car_api_endpoint = args.car_model_api
     
     with properties.houses_conn.cursor() as cur:
-        cur.execute('SELECT DISTINCT walking from needs order by 1')
+        cur.execute('SELECT DISTINCT walking FROM needs order by 1')
         walking_time = list(filter(lambda x: x != 0, map(lambda y: y[0], cur.fetchall())))
 
-        cur.execute('SELECT DISTINCT public_transport from needs order by 1')
+        cur.execute('SELECT DISTINCT public_transport FROM needs order by 1')
         public_transport_time = list(filter(lambda x: x != 0, map(lambda y: y[0], cur.fetchall())))
 
-        cur.execute('SELECT DISTINCT personal_transport from needs order by 1')
+        cur.execute('SELECT DISTINCT personal_transport FROM needs order by 1')
         car_time = list(filter(lambda x: x != 0, map(lambda y: y[0], cur.fetchall())))
 
         cur.execute(f'SELECT DISTINCT ROUND(ST_X(ST_Centroid(geometry))::numeric, 6)::float, ROUND(ST_Y(ST_Centroid(geometry))::numeric, 6)::float FROM houses')

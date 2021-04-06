@@ -1,6 +1,6 @@
 FROM python:3.8
 
-RUN pip3 install flask flask_compress psycopg2 pandas numpy requests
+RUN pip3 install flask flask_compress psycopg2 pandas numpy requests gevent
 
 COPY provision_api.py /
 COPY calculate_services_cnt.py /

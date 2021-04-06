@@ -10,6 +10,76 @@ class Properties:
         self.db_user = db_user
         self.db_pass = db_pass
 
+def ensure_tables(conn: psycopg2.extensions.connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute('CREATE EXTENSION IF NOT EXISTS postgis')
+        for table_name in ('walking', 'transport', 'car'):
+            cur.execute(
+                f'CREATE TABLE if not exists {table_name} ('
+                '   latitude float not null,'
+                '   longitude float not null,'
+                '   time int not null,'
+                '   geometry geometry,'
+                '   primary key(latitude, longitude, time)'
+                ')'
+            )
+        cur.execute(
+            'CREATE TABLE if not exists aggregation_municipality ('
+            '   id serial NOT NULL,'
+            '   living_situation_id integer references living_situations(id),'
+            '   social_group_id integer references social_groups(id),'
+            '   service_type_id integer references service_types(id),'
+            '   municipality_id integer references municipalities(id) NOT NULL,'
+            '   avg_intensity float NOT NULL,'
+            '   avg_significance float NOT NULL,'
+            '   avg_provision float NOT NULL,'
+            '   time_done timestamp NOT NULL,'
+            '   UNIQUE(living_situation_id, social_group_id, service_type_id, municipality_id)'
+            ')'
+        )
+        cur.execute(
+            'CREATE TABLE if not exists aggregation_district ('
+            '   id serial NOT NULL,'
+            '   living_situation_id integer references living_situations(id),'
+            '   social_group_id integer references social_groups(id),'
+            '   service_type_id integer references service_types(id),'
+            '   district_id integer references districts(id) NOT NULL,'
+            '   avg_intensity float NOT NULL,'
+            '   avg_significance float NOT NULL,'
+            '   avg_provision float NOT NULL,'
+            '   time_done timestamp NOT NULL,'
+            '   UNIQUE(living_situation_id, social_group_id, service_type_id, district_id)'
+            ')'
+        )
+        cur.execute(
+            'CREATE TABLE if not exists aggregation_house ('
+            '   id serial NOT NULL,'
+            '   living_situation_id integer references living_situations(id),'
+            '   social_group_id integer references social_groups(id),'
+            '   service_type_id integer references service_types(id),'
+            '   latitude float NOT NULL,'
+            '   longitude float NOT NULL,'
+            '   avg_intensity float NOT NULL,'
+            '   avg_significance float NOT NULL,'
+            '   avg_provision float NOT NULL,'
+            '   time_done timestamp NOT NULL,'
+            '   UNIQUE(living_situation_id, social_group_id, service_type_id, latitude, longitude)'
+            ')'
+        )
+        cur.execute(
+            'CREATE TABLE if not exists atomic ('
+            '   id serial NOT NULL,'
+            '   latitude float NOT NULL,'
+            '   longitude float NOT NULL,'
+            '   walking int NOT NULL,'
+            '   transport int NOT NULL,'
+            '   intensity int NOT NULL,'
+            '   significance int NOT NULL,'
+            '   provision_value float NOT NULL'
+            ')'
+        )
+
+
 if __name__ == '__main__':
     
     # Default properties settings
@@ -42,6 +112,8 @@ if __name__ == '__main__':
                         help=f'skip transport data migration')
     parser.add_argument('-nC', '--no_car', action='store_true', dest='no_car',
                         help=f'skip car data migration')
+    parser.add_argument('-nS', '--no_sqlite', action='store_true', dest='no_sqlite',
+                        help='only ensure tables, ignore sqlite file')
     args = parser.parse_args()
 
     if args.db_addr is not None:
@@ -68,105 +140,40 @@ if __name__ == '__main__':
     done_car = 0
     with psycopg2.connect(f'host={properties.db_addr} port={properties.db_port} dbname={properties.db_name}'
             f' user={properties.db_user} password={properties.db_pass}') as conn:
-        with sqlite3.connect(sqlite3_filename) as conn_sl3:
-            cur: psycopg2.extensions.cursor = conn.cursor()
-            cur_sl3 = conn_sl3.cursor()
-            cur.execute(
-                'CREATE EXTENSION if not exists postgis'
-            )
-            for table_name in ('walking', 'transport', 'car'):
-                cur.execute(
-                    f'CREATE TABLE if not exists {table_name} ('
-                    '   latitude float not null,'
-                    '   longitude float not null,'
-                    '   time int not null,'
-                    '   geometry geometry,'
-                    '   primary key(latitude, longitude, time)'
-                    ')'
-                )
-            cur.execute(
-                'CREATE TABLE if not exists aggregation_municipality ('
-                '   id serial NOT NULL,'
-                '   living_situation_id integer references living_situations(id),'
-                '   social_group_id integer references social_groups(id),'
-                '   city_function_id integer references city_functions(id),'
-                '   municipality_id integer references municipalities(id) NOT NULL,'
-                '   avg_intensity float NOT NULL,'
-                '   avg_significance float NOT NULL,'
-                '   avg_provision float NOT NULL,'
-                '   time_done timestamp NOT NULL,'
-                '   UNIQUE(living_situation_id, social_group_id, city_function_id, municipality_id)'
-                ')'
-            )
-            cur.execute(
-                'CREATE TABLE if not exists aggregation_district ('
-                '   id serial NOT NULL,'
-                '   living_situation_id integer references living_situations(id),'
-                '   social_group_id integer references social_groups(id),'
-                '   city_function_id integer references city_functions(id),'
-                '   district_id integer references districts(id) NOT NULL,'
-                '   avg_intensity float NOT NULL,'
-                '   avg_significance float NOT NULL,'
-                '   avg_provision float NOT NULL,'
-                '   time_done timestamp NOT NULL,'
-                '   UNIQUE(living_situation_id, social_group_id, city_function_id, district_id)'
-                ')'
-            )
-            cur.execute(
-                'CREATE TABLE if not exists aggregation_house ('
-                '   id serial NOT NULL,'
-                '   living_situation_id integer references living_situations(id),'
-                '   social_group_id integer references social_groups(id),'
-                '   city_function_id integer references city_functions(id),'
-                '   latitude float NOT NULL,'
-                '   longitude float NOT NULL,'
-                '   avg_intensity float NOT NULL,'
-                '   avg_significance float NOT NULL,'
-                '   avg_provision float NOT NULL,'
-                '   time_done timestamp NOT NULL,'
-                '   UNIQUE(living_situation_id, social_group_id, city_function_id, latitude, longitude)'
-                ')'
-            )
-            cur.execute(
-                'CREATE TABLE if not exists atomic ('
-                '   id serial NOT NULL,'
-                '   latitude float NOT NULL,'
-                '   longitude float NOT NULL,'
-                '   walking int NOT NULL,'
-                '   transport int NOT NULL,'
-                '   intensity int NOT NULL,'
-                '   significance int NOT NULL,'
-                '   provision_value float NOT NULL'
-                ')'
-            )
-            start_time = time.time()
-            if not skip_walking:
-                print('Migrating walking')
-                cur_sl3.execute('select latitude, longitude, time, geometry from walking')
-                for lat, lan, t, geom in cur_sl3:
-                    cur.execute('insert into walking (latitude, longitude, time, geometry) values (%s, %s, %s, ST_GeomFromGeoJSON(%s)) ON CONFLICT DO NOTHING', (lat, lan, t, geom))
-                    if done_walking % 1000 == 0:
-                        print(f'Walking in progress: {done_walking}')
-                    done_walking += 1
-            if not skip_transport:
-                print('Migrating transport')
-                cur_sl3.execute('select latitude, longitude, time, geometry from transport')
-                for lat, lan, t, geom in cur_sl3:
-                    if geom == 'null':
-                        continue
-                    cur.execute('insert into transport (latitude, longitude, time, geometry) values (%s, %s, %s, ST_GeomFromGeoJSON(%s)) ON CONFLICT DO NOTHING', (lat, lan, t, geom))
-                    if done_transport % 1000 == 0:
-                        print(f'Transport in progress: {done_transport}')
-                    done_transport += 1
-            if not skip_car:
-                print('Migrating car')
-                cur_sl3.execute('select latitude, longitude, time, geometry from car')
-                for lat, lan, t, geom in cur_sl3:
-                    if geom == 'null':
-                        continue
-                    cur.execute('insert into car (latitude, longitude, time, geometry) values (%s, %s, %s, ST_GeomFromGeoJSON(%s)) ON CONFLICT DO NOTHING', (lat, lan, t, geom))
-                    if done_car % 1000 == 0:
-                        print(f'car in progress: {done_car}')
-                    done_car += 1
+        ensure_tables(conn)
+        if not args.no_sqlite:
+            with sqlite3.connect(sqlite3_filename) as conn_sl3:
+                cur: psycopg2.extensions.cursor = conn.cursor()
+                cur_sl3 = conn_sl3.cursor()
+                start_time = time.time()
+                if not skip_walking:
+                    print('Migrating walking')
+                    cur_sl3.execute('select latitude, longitude, time, geometry from walking')
+                    for lat, lan, t, geom in cur_sl3:
+                        cur.execute('insert into walking (latitude, longitude, time, geometry) values (%s, %s, %s, ST_GeomFromGeoJSON(%s)) ON CONFLICT DO NOTHING', (lat, lan, t, geom))
+                        if done_walking % 1000 == 0:
+                            print(f'Walking in progress: {done_walking}')
+                        done_walking += 1
+                if not skip_transport:
+                    print('Migrating transport')
+                    cur_sl3.execute('select latitude, longitude, time, geometry from transport')
+                    for lat, lan, t, geom in cur_sl3:
+                        if geom == 'null':
+                            continue
+                        cur.execute('insert into transport (latitude, longitude, time, geometry) values (%s, %s, %s, ST_GeomFromGeoJSON(%s)) ON CONFLICT DO NOTHING', (lat, lan, t, geom))
+                        if done_transport % 1000 == 0:
+                            print(f'Transport in progress: {done_transport}')
+                        done_transport += 1
+                if not skip_car:
+                    print('Migrating car')
+                    cur_sl3.execute('select latitude, longitude, time, geometry from car')
+                    for lat, lan, t, geom in cur_sl3:
+                        if geom == 'null':
+                            continue
+                        cur.execute('insert into car (latitude, longitude, time, geometry) values (%s, %s, %s, ST_GeomFromGeoJSON(%s)) ON CONFLICT DO NOTHING', (lat, lan, t, geom))
+                        if done_car % 1000 == 0:
+                            print(f'car in progress: {done_car}')
+                        done_car += 1
+                print(f'Totally migrated walking ({done_walking}), transport ({done_transport}) and car ({done_car}) in {time.time() - start_time:.2f} seonds')
+        conn.commit()
                     
-    print(f'Totally migrated walking ({done_walking}), transport ({done_transport}) and car ({done_car}) in {time.time() - start_time:.2f} seonds')
