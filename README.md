@@ -46,13 +46,13 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -T,--transport_model_endpoint \<str\> - tranaport_model_endpoint
 * -S,--aggregate_target \<str\>- aggregation_target
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-04-06)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-04-08)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-04-06 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-04-08 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-04-06`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-04-06`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-04-08`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021--04-06`  
       Ensure that:
         1. _/etc/postgresql/12/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/12/main/pg\_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
@@ -115,6 +115,7 @@ At this moment there are endpoints:
 
 ```json
 {
+  {
   "_links": {
     "aggregated-provision": {
       "href": "/api/provision/aggregated/{?social_group,living_situation,service,location}",
@@ -159,6 +160,13 @@ At this moment there are endpoints:
     },
     "list-social_groups": {
       "href": "/api/list/social_groups/{?service,living_situation}",
+      "templated": true
+    },
+    "provision_v3_ready": {
+      "href": "/api/provision_v3/ready/"
+    },
+    "provision_v3_services": {
+      "href": "/api/provision_v3/services/{?service}",
       "templated": true
     },
     "ready_aggregations_districts": {
@@ -763,6 +771,74 @@ At this moment there are endpoints:
 :social_group, :res_soc_group - string representing social group. :social_group can be null in case it was not set in request, otherwise they are the same  
 :living_situation, :res_situation - string representing social group. :living_situation can be null in case it was not set in request, otherwise they are the same
 :provision - float from 0.0 to 5.0
+
+### /api/provision_v3/ready
+
+```json
+{
+  "_embedded": {
+    "ready": [
+      {
+        "service": ":service_name",
+        "count": :service_count
+      }, 
+      <...>
+    ]
+  }, 
+  "_links": {
+    "self": {
+      "href": "/api/provision_v3/ready/"
+    }
+  }
+}
+```
+
+:service_name - string representing one of the servise types  
+:service_count - int above zero, number of evaluated services of this service type
+
+### /api/provision_v3/services
+
+```json
+{
+  "_embedded": {
+    "parameters": {
+      "response_services_count": ":response_services_count",
+      "service": ":service_type"
+    },
+    "services": [
+      {
+        "district": ":district_short_name",
+        "municipality": ":municipality_short_name",
+        "block": ":block_id",
+        "address": ":address",
+        "service_name": ":service_name",
+        "service_type": ":service_type",
+        "houses_in_access": ":houses",
+        "people_in_access": ":people",
+        "service_load": ":service_load",
+        "needed_capacity": ":needed_capacity",
+        "reserve_resource": ":service_resource",
+        "evaluation": ":evaluation"
+      },
+      <...>
+    ]
+  },
+  "_links": {
+    "self": {
+      "href": "/api/provision_v3/services/"
+    }
+  }
+}
+```
+
+:response_services_count - int, size of returned "services" array  
+:district_short_name, :municipality_short_name, :address - string (or null)  
+:block_id - integer (or null)  
+:service_type - string representing one of the service types (missing in "services" section if
+  `service` parameter was given in request and is null in "parameters" section otherwise)  
+:houses, :people - int above or equal to zero  
+:service_load, :needed_capacity, :service_resource - int. service_load >= needed_capacity, needed_capacity + service_resource = service_maximum_load  
+:evaluation - int from 0 to 10
 
 ### /api/houses
 

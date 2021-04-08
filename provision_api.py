@@ -1259,7 +1259,7 @@ def list_city_hierarchy() -> Response:
 @app.route('/api/', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2021-04-06',
+        'version': '2021-04-08',
         '_links': {
             'self': {
                 'href': request.path
@@ -1332,9 +1332,53 @@ def api_help() -> Response:
             'ready_aggregations_municipalities': {
                 'href': '/api/provision/ready/municipalities/{?social_group,living_situation,service,municipality}',
                 'templated': True
+            },
+            'provision_v3_ready': {
+                'href': '/api/provision_v3/ready/'
+            },
+            'provision_v3_services': {
+                'href': '/api/provision_v3/services/{?service}',
+                'templated': True
             }
         }
     }))
+
+@app.route('/api/provision_v3/services', methods=['GET'])
+@app.route('/api/provision_v3/services/', methods=['GET'])
+def provision_v3_services() -> Response:
+    with properties.houses_conn.cursor() as cur:
+        cur.execute('SELECT s.service_type, s.service_name, s.district_name, s.municipal_name, s.block_id, s.address,'
+                '    v.houses_in_radius, v.people_in_radius, v.service_load, v.needed_capacity, v.reserve_resource, v.evaluation'
+                ' FROM all_services s JOIN functional_objects_values v ON s.func_id = v.functional_object_id' + 
+                (' WHERE s.service_type = %s' if 'service' in request.args else ''), ((request.args['service'],) if 'service' in request.args else ()))
+        df = pd.DataFrame(cur.fetchall(), columns=('service_type', 'service_name', 'district', 'municipality', 'block', 'address', 'houses_in_access',
+                'people_in_access', 'service_load', 'needed_capacity', 'reserve_resource', 'evaluation'))
+        if 'service' in request.args:
+            df = df.drop('service_type', axis=True)
+        return make_response(jsonify({
+            '_links': {'self': {'href': request.path}},
+            '_embedded': {
+                'services': list(df.transpose().to_dict().values()),
+                'parameters': {
+                    'service': request.args.get('service'),
+                    'response_services_count': df.shape[0]
+                }
+            }
+        }))
+
+@app.route('/api/provision_v3/ready', methods=['GET'])
+@app.route('/api/provision_v3/ready/', methods=['GET'])
+def provision_v3_ready() -> Response:
+    with properties.houses_conn.cursor() as cur:
+        cur.execute('SELECT s.service_type, count(*) FROM all_services s'
+                ' JOIN functional_objects_values v ON s.func_id = v.functional_object_id GROUP BY s.service_type')
+        df = pd.DataFrame(cur.fetchall(), columns=('service', 'count'))
+        return make_response(jsonify({
+            '_links': {'self': {'href': request.path}},
+            '_embedded': {
+                'ready': list(df.transpose().to_dict().values())
+            }
+        }))
 
 @app.errorhandler(404)
 def not_found(error):
