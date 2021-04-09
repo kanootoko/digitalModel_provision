@@ -1353,12 +1353,13 @@ def provision_v3_services() -> Response:
                 (' WHERE s.service_type = %s' if 'service' in request.args else ''), ((request.args['service'],) if 'service' in request.args else ()))
         df = pd.DataFrame(cur.fetchall(), columns=('service_type', 'service_name', 'district', 'municipality', 'block', 'address', 'houses_in_access',
                 'people_in_access', 'service_load', 'needed_capacity', 'reserve_resource', 'evaluation'))
+        df['block'] = df['block'].replace({np.nan, None})
         if 'service' in request.args:
             df = df.drop('service_type', axis=True)
         return make_response(jsonify({
             '_links': {'self': {'href': request.path}},
             '_embedded': {
-                'services': list(df.transpose().to_dict().values()),
+                'services': list(df.replace().transpose().to_dict().values()),
                 'parameters': {
                     'service': request.args.get('service'),
                     'response_services_count': df.shape[0]
