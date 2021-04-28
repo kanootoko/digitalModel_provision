@@ -1259,7 +1259,7 @@ def list_city_hierarchy() -> Response:
 @app.route('/api/', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2021-04-08',
+        'version': '2021-04-28',
         '_links': {
             'self': {
                 'href': request.path
@@ -1339,6 +1339,10 @@ def api_help() -> Response:
             'provision_v3_services': {
                 'href': '/api/provision_v3/services/{?service}',
                 'templated': True
+            },
+            'provision_v3_prosperity': {
+                'href': '/api/provision_v3/prosperity/{?social_group,service,location}',
+                'templated': True
             }
         }
     }))
@@ -1380,6 +1384,79 @@ def provision_v3_ready() -> Response:
                 'ready': list(df.transpose().to_dict().values())
             }
         }))
+
+@app.route('/api/provision_v3/prosperity', methods=['GET'])
+@app.route('/api/provision_v3/prosperity/', methods=['GET'])
+def provision_v3_prosperity() -> Response:
+    error: Optional[str] = None
+    if not ('social_group' in request.args and 'service' in request.args and 'location' in request.args):
+        error = 'Request must include all of the ("social_group", "service", "location") arguments'
+    
+    parameters: Dict[str, Optional[str]] = {
+        'social_group': request.args.get('social_group'),
+        'service': request.args.get('service'),
+        'location': request.args.get('location')
+    }
+
+    if parameters['location']:
+        if parameters['location'] in city_hierarchy['district_full_name'].unique():
+            location_type = 'districts'
+        elif parameters['location'] in city_hierarchy['municipality_full_name'].unique():
+            location_type = 'municipalities'
+        else:
+            error = '; '.join((*filter(lambda x: x is not None, (error,)), # type: ignore
+                        'cannot determine type of location. Should be one of the districts or municipalities'))
+
+    provision: Optional[float] = None
+    if parameters['location'] and parameters['service']:
+        with properties.houses_conn.cursor() as cur:
+            cur.execute(f'SELECT evaluation_mean FROM functional_objects_{location_type}'
+                    ' WHERE district_id = (SELECT id FROM districts WHERE full_name = %s)'
+                    ' AND service_id = (SELECT id FROM service_types WHERE name = %s)',
+                    (parameters['location'], parameters['service']))
+            res = cur.fetchone()
+            if res is not None:
+                provision = res[0]
+            else:
+                error = '; '.join((*filter(lambda x: x is not None, (error,)), # type: ignore
+                        'significane is not found for a given combinaton of social_group and service'))
+
+    significance: Optional[float] = None
+    if parameters['social_group'] and parameters['service']:
+        n = needs['significance'][(needs['social_group'] == parameters['social_group']) & (needs['service'] == parameters['service'])]
+
+        if n.shape[0] == 0:
+            error = '; '.join((*filter(lambda x: x is not None, (error,)), # type: ignore
+                    'significane is not found for a given combinaton of social_group and service'))
+        else:
+            significance = n.iloc[0]
+
+
+    if error is not None:
+        return make_response(jsonify({
+            '_links': {'self': {'href': request.path}},
+            '_embedded': {
+                'prosperity': {
+                    'provision': provision,
+                    'significance': significance,
+                    'prosperity': None
+                },
+                'error': error,
+                'parameters': parameters
+            }
+        }), 400)
+
+    return make_response(jsonify({
+        '_links': {'self': {'href': request.path}},
+        '_embedded': {
+            'prosperity': {
+                'provision': provision,
+                'significance': significance,
+                'prosperity': round(1 + significance * (provision - 1), 2) # type: ignore
+            },
+            'parameters': parameters
+        }
+    }))
 
 @app.errorhandler(404)
 def not_found(error):

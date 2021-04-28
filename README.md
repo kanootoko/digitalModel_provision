@@ -46,13 +46,13 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -T,--transport_model_endpoint \<str\> - tranaport_model_endpoint
 * -S,--aggregate_target \<str\>- aggregation_target
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-04-08)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-04-28)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-04-08 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-04-28 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-04-08`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-04-08`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-04-28`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-04-28`  
       Ensure that:
         1. _/etc/postgresql/12/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/12/main/pg\_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
@@ -89,6 +89,9 @@ At this moment there are endpoints:
   Takes parameters by query. You can set `social_group`, `service`, `living_situation` or `district` parameter to specify the request.
 * **/api/provision/ready/municipalities**: returns the list of already aggregated by municipalities provision values.
   Takes parameters by query. You can set `social_group`, `service`, `living_situation` or `municipality` parameter to specify the request.
+* **/api/provision_v3/ready**: returns the list of calculated service types with the number of them
+* **/api/provision_v3/services**: returns the list of conctere services with their provision evaluation
+* **/api/provision_v3/prosperity**: returns the prosperity value of a service type for a given social froup in a given location (district or municipality)
 * **/api/list/social_groups**: returns list of social groups. If you specify a city_function and/or living_situation,
   only relative social groups will be returned
 * **/api/list/city_functions**: returns a list of city functions. If you specify a social_group and/or living_situation,
@@ -167,6 +170,10 @@ At this moment there are endpoints:
     },
     "provision_v3_services": {
       "href": "/api/provision_v3/services/{?service}",
+      "templated": true
+    },
+    "provision_v3_prosperity": {
+      "href": "/api/provision_v3/prosperity/{?social_group,service,location}",
       "templated": true
     },
     "ready_aggregations_districts": {
@@ -839,6 +846,35 @@ At this moment there are endpoints:
 :houses, :people - int above or equal to zero  
 :service_load, :needed_capacity, :service_resource - int. service_load >= needed_capacity, needed_capacity + service_resource = service_maximum_load  
 :evaluation - int from 0 to 10
+
+### /provision_v3/prosperity
+
+```json
+{
+  "_embedded": {
+    "parameters": {
+      "location": ":location",
+      "service": ":service_type",
+      "social_group": ":social_group"
+    },
+    "prosperity": {
+      "significance": ":significance",
+      "provision": ":provision",
+      "prosperity": ":prosperity"
+    }
+  },
+  "_links": {
+    "self": {
+      "href": "/api/provision_v3/prosperity/"
+    }
+  }
+}
+```
+
+:service, :social_group, :location - string, representing service, social group and district or municipality
+:significance - float from 0 to 1. Can be null if not found
+:provision - integer from 0 to 10. Can be null if not calculated
+:prosperity - float from 0 to 10. Can be null if significance or provision is null
 
 ### /api/houses
 
