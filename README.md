@@ -46,16 +46,16 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -T,--transport_model_endpoint \<str\> - tranaport_model_endpoint
 * -S,--aggregate_target \<str\>- aggregation_target
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-04-28)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-05-10)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-04-28 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-05-10 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-04-28`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-04-28`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-05-10`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-05-10`  
       Ensure that:
-        1. _/etc/postgresql/12/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
-        2. _/etc/postgresql/12/main/pg\_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
+        1. _/etc/postgresql/\<version\>/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
+        2. _/etc/postgresql/\<version\>/main/pg\_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
         3. command `ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1` returns ip address  
         If config files are not found, `sudo -u postgres psql -c 'SHOW config_file'` should say where they are
 
@@ -78,28 +78,32 @@ At this moment there are endpoints:
   *target_s_divider*, *coeff_multiplier*.
 * **/api/provision/aggregated**: returns the aggregated provision value. Takes parameters by query. You can set: `social_group` for
   social group or "all", `service` for service or "all", `living_situation` for living_situation or "all", `location` for district,
-  municipality or house (format: latitude,longitude). `location` can be also "inside_\<district\>" to list all of the municipalities inside the given district
+  municipality or house (format: latitude,longitude). `location` can be also "inside_\<district\>" to list all of the municipalities inside the given district.
 * **/api/provision/alternative**: returns alternative provi sion aggregation value for a given parameters. You can set: `social_group` for
   social group or "all", `service` for service or "all", `living_situation` for living_situation or "all", `location` for district,
   municipality or house (format: latitude,longitude). `location` can be also "inside_\<district\>" to list all of the municipalities inside the given district.
-  You can also set `return_debug_info` parameter to get results of inner calculations
+  You can also set `return_debug_info` parameter to get results of inner calculations.
 * **/api/provision/ready/houses**: returns the list of already aggregated by houses provision values.
   Takes parameters by query. You can set `social_group`, `service`, `living_situation` or `house` parameter to specify the request.
 * **/api/provision/ready/districts**: returns the list of already aggregated by districts provision values.
   Takes parameters by query. You can set `social_group`, `service`, `living_situation` or `district` parameter to specify the request.
 * **/api/provision/ready/municipalities**: returns the list of already aggregated by municipalities provision values.
   Takes parameters by query. You can set `social_group`, `service`, `living_situation` or `municipality` parameter to specify the request.
-* **/api/provision_v3/ready**: returns the list of calculated service types with the number of them
-* **/api/provision_v3/services**: returns the list of conctere services with their provision evaluation
-* **/api/provision_v3/prosperity**: returns the prosperity value of a service type for a given social froup in a given location (district or municipality)
+* **/api/provision_v3/ready**: returns the list of calculated service types with the number of them.
+* **/api/provision_v3/services**: returns the list of conctere services with their provision evaluation.
+* **/api/provision_v3/prosperity**: returns the prosperity value of a service type for a given social froup in a given location (district or municipality).
+* **/api/provision_v3/prosperity/municipalities**: returns the prosperity value of municipalities. If social_group is set to 'all',
+  the mean significance is used for calculations. if `district` is set, returns prosperity of municipalities of a given district.
+* **/api/provision_v3/prosperity/districts**: returns the prosperity value of districts. If `social_group` is set to 'all',
+  the mean significance is used for calculations.
 * **/api/list/social_groups**: returns list of social groups. If you specify a city_function and/or living_situation,
-  only relative social groups will be returned
+  only relative social groups will be returned.
 * **/api/list/city_functions**: returns a list of city functions. If you specify a social_group and/or living_situation,
-  only relative city functions will be returned
+  only relative city functions will be returned.
 * **/api/list/services**: returns a list of services. If you specify a social_group and/or living_situation,
-  only relarive services will be returned
+  only relarive services will be returned.
 * **/api/list/living_situations**: returns a list of living situations. If you specify a social_group and/or city_function,
-  only relative living situations will be returned
+  only relative living situations will be returned.
 * **/api/relevance/social_groups**: returns a list of social groups. If you specify city_function as a parameter, the output will be limited to social groups
   relevant to this city function, and significane will be returned for each of them. If you specify both city_function and living_situation, then
   intensity will be returned too.
@@ -108,10 +112,10 @@ At this moment there are endpoints:
   intensity will be returned too.
 * **/api/relevance/living_situations**: returns a list of living situations. If you specify social_group, the output will be limited to living situations relative
   to the given social group and intensity will be returned for each of them. If the city_function parameter is also specified, significance will be returned
-  in params section
-* **/api/list/infrastructures**: returns a list of infrastructures with functions list for each of them and with services list for each funtion
-* **/api/list/districts**: returns a list of districts
-* **/api/list/municipalities**: returns a list of municipalities
+  in params section.
+* **/api/list/infrastructures**: returns a list of infrastructures with functions list for each of them and with services list for each funtion.
+* **/api/list/districts**: returns a list of districts.
+* **/api/list/municipalities**: returns a list of municipalities.
 * **/api/houses**: returns coordinates of houses inside the square of `firstPoint` and `secondPoint` parameters coordinates.
 
 ### /api
@@ -871,10 +875,92 @@ At this moment there are endpoints:
 }
 ```
 
-:service, :social_group, :location - string, representing service, social group and district or municipality
-:significance - float from 0 to 1. Can be null if not found
-:provision - integer from 0 to 10. Can be null if not calculated
+:service, :social_group, :location - string, representing service, social group and district or municipality  
+:significance - float from 0 to 1. Can be null if not found  
+:provision - integer from 0 to 10. Can be null if not calculated  
 :prosperity - float from 0 to 10. Can be null if significance or provision is null
+
+### /api/provision_v3/prosperity/municipalities/
+
+```json
+{
+  "_embedded": {
+    "parameters": {
+      "district": ":district_request",
+      "location_type": "municipalities",
+      "municipality": ":municipality_request",
+      "service": ":service_reqeust",
+      "social_group": ":social_group"
+    },
+    "prosperity": [
+      {
+        "municipality": ":municipality",
+        "service": ":service",
+        "social_group": ":social_group",
+        "significance": ":significance",
+        "provision": ":provision",
+        "prosperity": ":prosperity"
+      },
+      <...>
+    ]
+  },
+  "_links": {
+    "self": {
+      "href": "/api/provision_v3/prosperity/municipalities/"
+    }
+  }
+}
+```
+
+:district_request, :municipality_request - string, district and municipality set in request (municipality can have value "all")  
+:service_request - string, service in request (can have value "all")  
+:municipality - string, municipality  
+:service - string, service  
+:social_group - string, social group. If `social_group` request parameter is set to "all", it is skipped fully  
+:significance - float from 0.0 to 1.0, significance of a given service to a social group (or mean of all social groups if `social_group` is set to "all")  
+:provision - float from 0.0 to 10.0, provision of a given service in municipality  
+:prosperity - float, prosperity value of a municipality
+
+### /api/provision_v3/prosperity/districts
+
+```json
+{
+  "_embedded": {
+    "parameters": {
+      "district": ":district_request",
+      "location_type": "municipalities",
+      "municipality": null,
+      "service": ":service_reqeust",
+      "social_group": ":social_group"
+    },
+    "prosperity": [
+      {
+        "municipality": ":municipality",
+        "service": ":service",
+        "social_group": ":social_group",
+        "significance": ":significance",
+        "provision": ":provision",
+        "prosperity": ":prosperity"
+      },
+      <...>
+    ]
+  },
+  "_links": {
+    "self": {
+      "href": "/api/provision_v3/prosperity/districts/"
+    }
+  }
+}
+```
+
+:district_request - string, district set in request (can have value "all")  
+:service_request - string, service in request (can have value "all")  
+:municipality - string, municipality  
+:service - string, service  
+:social_group - string, social group. If `social_group` request parameter is set to "all", it is skipped fully  
+:significance - float from 0.0 to 1.0, significance of a given service to a social group (or mean of all social groups if `social_group` is set to "all")  
+:provision - float from 0.0 to 10.0, provision of a given service in municipality  
+:prosperity - float, prosperity value of a municipality
 
 ### /api/houses
 

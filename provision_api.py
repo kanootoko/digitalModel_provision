@@ -233,6 +233,9 @@ services_buildings: pd.DataFrame
 blocks: pd.DataFrame
 city_hierarchy: pd.DataFrame
 
+provision_districts: pd.DataFrame
+provision_municipalities: pd.DataFrame
+
 def compute_atomic_provision(social_group: str, living_situation: str, service: str, coords: Tuple[float, float],
         provision_conn: psycopg2.extensions.connection, houses_conn: psycopg2.extensions.connection, **kwargs) -> Dict[str, Any]:
     walking_time_cost: int
@@ -636,6 +639,8 @@ def update_global_data() -> None:
     global services_buildings
     global blocks
     global city_hierarchy
+    global provision_districts
+    global provision_municipalities
     with properties.houses_conn.cursor() as cur:
         cur.execute('SELECT DISTINCT dist.full_name, muni.full_name, ROUND(ST_X(ST_Centroid(h.geometry))::numeric, 3)::float as latitude, ROUND(ST_Y(ST_Centroid(h.geometry))::numeric, 3)::float as longitude FROM houses h inner join districts dist on dist.id = h.district_id inner join municipalities muni on muni.id = h.municipal_id')
         all_houses = pd.DataFrame(cur.fetchall(), columns=('district', 'municipality', 'latitude', 'longitude'))
@@ -672,12 +677,26 @@ def update_global_data() -> None:
                 ' JOIN districts d on d.id = m.district_id ORDER BY d.full_name, m.full_name')
         city_hierarchy = pd.DataFrame(cur.fetchall(), columns=('municipality_id', 'municipality_full_name', 'municipality_short_name',
                 'municipality_population', 'district_id', 'district_full_name', 'district_short_name', 'district_population'))
-    with properties.houses_conn.cursor() as cur:
+
         cur.execute('SELECT b.id, b.population, m.full_name as municipality, d.full_name as district FROM'
             ' blocks b JOIN municipalities m ON m.id = b.municipality_id JOIN districts d ON d.id = m.district_id ORDER BY 4, 3, 1')
         blocks = pd.DataFrame(cur.fetchall(), columns=('id', 'population', 'municipality', 'district')).set_index('id')
+        blocks['population'] = blocks['population'].replace({np.nan: None})
+
+        cur.execute('SELECT loc.full_name, s.name, eval.evaluation_mean FROM functional_objects_districts eval'
+                ' JOIN districts loc on eval.district_id = loc.id'
+                ' JOIN service_types s on eval.service_id = s.id'
+                ' ORDER BY 1, 2'
+        )
+        provision_districts = pd.DataFrame(cur.fetchall(), columns=('district', 'service', 'provision'))
+
+        cur.execute('SELECT loc.full_name, s.name, eval.evaluation_mean FROM functional_objects_municipalities eval'
+                ' JOIN municipalities loc on eval.municipality_id = loc.id'
+                ' JOIN service_types s on eval.service_id = s.id'
+                ' ORDER BY 1, 2'
+        )
+        provision_municipalities = pd.DataFrame(cur.fetchall(), columns=('municipality', 'service', 'provision'))
     # blocks['population'] = blocks['population'].fillna(-1).astype(int)
-    blocks['population'] = blocks['population'].replace({np.nan: None})
     with properties.provision_conn.cursor() as cur:
         cur.execute('SELECT s.block_id, ss.social_groups, s.services FROM blocks_soc_groups ss JOIN blocks_services s on s.block_id = ss.block_id')
         blocks = blocks.join(pd.DataFrame(cur.fetchall(), columns=('id', 'social_groups', 'services')).set_index('id'))
@@ -1259,7 +1278,7 @@ def list_city_hierarchy() -> Response:
 @app.route('/api/', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2021-04-28',
+        'version': '2021-05-10',
         '_links': {
             'self': {
                 'href': request.path
@@ -1343,6 +1362,14 @@ def api_help() -> Response:
             'provision_v3_prosperity': {
                 'href': '/api/provision_v3/prosperity/{?social_group,service,location}',
                 'templated': True
+            },
+            'provision_v3_prosperity_districts': {
+                'href': '/api/provision_v3/prosperity/districts/{?district,service,social_group}',
+                'templated': True
+            },
+            'provision_v3_prosperity_municipalities': {
+                'href': '/api/provision_v3/prosperity/municipalities/{?district,municipality,service,social_group}',
+                'templated': True
             }
         }
     }))
@@ -1398,28 +1425,23 @@ def provision_v3_prosperity() -> Response:
         'location': request.args.get('location')
     }
 
-    if parameters['location']:
+    provision: Optional[float] = None
+    if parameters['location'] and parameters['service']:
+        res = pd.Series(dtype=object)
         if parameters['location'] in city_hierarchy['district_full_name'].unique():
-            location_type = 'districts'
+            res = provision_districts[(provision_districts['district'] == parameters['location']) &
+                    (provision_districts['service'] == parameters['service'])]
         elif parameters['location'] in city_hierarchy['municipality_full_name'].unique():
-            location_type = 'municipalities'
+            res = provision_municipalities[(provision_municipalities['municipality'] == parameters['location']) &
+                    (provision_municipalities['service'] == parameters['service'])]
         else:
             error = '; '.join((*filter(lambda x: x is not None, (error,)), # type: ignore
                         'cannot determine type of location. Should be one of the districts or municipalities'))
-
-    provision: Optional[float] = None
-    if parameters['location'] and parameters['service']:
-        with properties.houses_conn.cursor() as cur:
-            cur.execute(f'SELECT evaluation_mean FROM functional_objects_{location_type}'
-                    ' WHERE district_id = (SELECT id FROM districts WHERE full_name = %s)'
-                    ' AND service_id = (SELECT id FROM service_types WHERE name = %s)',
-                    (parameters['location'], parameters['service']))
-            res = cur.fetchone()
-            if res is not None:
-                provision = res[0]
-            else:
-                error = '; '.join((*filter(lambda x: x is not None, (error,)), # type: ignore
-                        'significane is not found for a given combinaton of social_group and service'))
+        if res.shape[0] != 0:
+            provision = round(res['provision'].mean(), 2)
+        else:
+            error = '; '.join((*filter(lambda x: x is not None, (error,)), # type: ignore
+                    'significane is not found for a given combinaton of social_group and service'))
 
     significance: Optional[float] = None
     if parameters['social_group'] and parameters['service']:
@@ -1455,6 +1477,55 @@ def provision_v3_prosperity() -> Response:
                 'prosperity': round(1 + significance * (provision - 1), 2) # type: ignore
             },
             'parameters': parameters
+        }
+    }))
+
+@app.route('/api/provision_v3/prosperity/<location_type>', methods=['GET'])
+@app.route('/api/provision_v3/prosperity/<location_type>/', methods=['GET'])
+def provision_v3_prosperity_multiple(location_type: str) -> Response:
+    assert location_type in ('districts', 'municipalities')
+    social_group = request.args.get('social_group')
+    service = request.args.get('service', 'all')
+    district = request.args.get('district', 'all')
+    municipality = request.args.get('municipality', 'all')
+    if location_type == 'districts':
+        municipality = None
+        res = provision_districts
+    else:
+        res = provision_municipalities
+        if district == 'all':
+            district = None
+    if municipality and municipality != 'all':
+        res = res[res['municipality'] == municipality]
+    elif location_type == 'municipalities':
+        if district != 'all':
+            municipalities_in_district = city_hierarchy[city_hierarchy['district_full_name'] == district]['municipality_full_name']
+            res = res[res['municipality'].isin(municipalities_in_district)]
+    elif district != 'all':
+        res = res[res['district'] == district]
+    n: pd.DataFrame = needs[['service', 'social_group', 'significance']]
+    n = n.groupby(['service', 'social_group']).mean().reset_index()
+    if service != 'all':
+        n = n[n['service'] == service]
+    if social_group == 'all':
+        n = n.groupby(['service'])['significance'].mean().reset_index()
+    elif social_group is not None:
+        n = n[n['social_group'] == social_group][['service', 'significance']]
+    res = res.merge(n, how='inner', on='service')
+    n['significance'] = n['significance'].apply(lambda x: round(x, 2))
+    res['prosperity'] = (1 + res['significance'] * (res['provision'] - 1)).apply(lambda x: round(x, 2))
+    
+    return make_response(jsonify({
+        '_links': {'self': {'href': request.path}},
+        '_embedded': {
+            'prosperity': list(res.transpose().to_dict().values()),
+            'parameters': {
+                'location_type': location_type,
+                'service': service,
+                'district': district,
+                'municipality': municipality,
+                'social_group': social_group
+            }
         }
     }))
 
