@@ -642,7 +642,11 @@ def update_global_data() -> None:
     global provision_districts
     global provision_municipalities
     with properties.houses_conn.cursor() as cur:
-        cur.execute('SELECT DISTINCT dist.full_name, muni.full_name, ROUND(ST_X(ST_Centroid(h.geometry))::numeric, 3)::float as latitude, ROUND(ST_Y(ST_Centroid(h.geometry))::numeric, 3)::float as longitude FROM houses h inner join districts dist on dist.id = h.district_id inner join municipalities muni on muni.id = h.municipal_id')
+        cur.execute('SELECT DISTINCT dist.full_name, muni.full_name, ROUND(ST_X(ST_Centroid(h.geometry))::numeric, 3)::float as latitude,'
+                '   ROUND(ST_Y(ST_Centroid(h.geometry))::numeric, 3)::float as longitude'
+                ' FROM houses h'
+                '   JOIN districts dist ON dist.id = h.district_id'
+                '   JOIN municipalities muni on muni.id = h.municipality_id')
         all_houses = pd.DataFrame(cur.fetchall(), columns=('district', 'municipality', 'latitude', 'longitude'))
 
         cur.execute('SELECT i.name, f.name, s.name from city_functions f JOIN infrastructure_types i ON i.id = f.infrastructure_type_id'
@@ -1278,7 +1282,7 @@ def list_city_hierarchy() -> Response:
 @app.route('/api/', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2021-05-10',
+        'version': '2021-05-10-quickfix',
         '_links': {
             'self': {
                 'href': request.path
