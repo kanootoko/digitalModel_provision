@@ -11,7 +11,7 @@ import itertools
 import os, threading
 from multiprocessing import Pipe
 from multiprocessing.connection import Connection
-from typing import Any, Tuple, List, Dict, Optional, Union
+from typing import Any, Tuple, List, Dict, Optional, Union, NamedTuple
 
 import calculate_services_cnt
 import experimental_aggregation
@@ -232,6 +232,13 @@ infrastructure: pd.DataFrame
 services_buildings: pd.DataFrame
 blocks: pd.DataFrame
 city_hierarchy: pd.DataFrame
+
+Listings = NamedTuple('Listings', [
+    ('city_functions', pd.DataFrame),
+    ('living_situations', pd.DataFrame),
+    ('social_groups', pd.DataFrame)
+])
+listings: Listings
 
 provision_districts: pd.DataFrame
 provision_municipalities: pd.DataFrame
@@ -636,6 +643,7 @@ def update_global_data() -> None:
     global all_houses
     global needs
     global infrastructure
+    global listings
     global services_buildings
     global blocks
     global city_hierarchy
@@ -649,9 +657,9 @@ def update_global_data() -> None:
                 '   JOIN municipalities muni on muni.id = h.municipality_id')
         all_houses = pd.DataFrame(cur.fetchall(), columns=('district', 'municipality', 'latitude', 'longitude'))
 
-        cur.execute('SELECT i.name, f.name, s.name from city_functions f JOIN infrastructure_types i ON i.id = f.infrastructure_type_id'
-                ' JOIN service_types s ON s.city_function_id = f.id ORDER BY i.name,f.name,s.name;')
-        infrastructure = pd.DataFrame(cur.fetchall(), columns=('infrastructure', 'function', 'service'))
+        cur.execute('SELECT i.id, i.name, f.id, f.name, s.id, s.name from city_functions f JOIN infrastructure_types i ON i.id = f.infrastructure_type_id'
+                ' JOIN service_types s ON s.city_function_id = f.id ORDER BY i.name, f.name, s.name;')
+        infrastructure = pd.DataFrame(cur.fetchall(), columns=('infrastructure_id', 'infrastructure', 'function_id', 'function', 'service_id', 'service'))
 
         cur.execute('SELECT s.name, l.name, f.name, n.walking, n.public_transport, n.personal_transport, n.intensity FROM needs n'
                 ' JOIN social_groups s ON s.id = n.social_group_id'
@@ -700,6 +708,14 @@ def update_global_data() -> None:
                 ' ORDER BY 1, 2'
         )
         provision_municipalities = pd.DataFrame(cur.fetchall(), columns=('municipality', 'service', 'provision'))
+
+        cur.execute('SELECT id, name FROM city_functions ORDER BY name')
+        city_functions = pd.DataFrame(cur.fetchall(), columns=('id', 'name'))
+        cur.execute('SELECT id, name FROM living_situations ORDER BY name')
+        living_situations = pd.DataFrame(cur.fetchall(), columns=('id', 'name'))
+        cur.execute('SELECT id, name FROM social_groups ORDER BY name')
+        social_groups = pd.DataFrame(cur.fetchall(), columns=('id', 'name'))
+        listings = Listings(city_functions, living_situations, social_groups)
     # blocks['population'] = blocks['population'].fillna(-1).astype(int)
     with properties.provision_conn.cursor() as cur:
         cur.execute('SELECT s.block_id, ss.social_groups, s.services FROM blocks_soc_groups ss JOIN blocks_services s on s.block_id = ss.block_id')
@@ -741,8 +757,17 @@ def atomic_provision() -> Response:
     if not ('social_group' in request.args and 'living_situation' in request.args and 'service' in request.args and 'location' in request.args):
         return make_response(jsonify({'error': 'Request must include all of the ("social_group", "living_situation", "service", "location") arguments'}), 400)
     social_group: str = request.args['social_group'] # type: ignore
+    if social_group.isnumeric():
+        social_group = listings.social_groups[listings.social_groups['id'] == int(social_group)]['name'].iloc[0] \
+                if int(social_group) in listings.social_groups['id'] else 'None'
     living_situation: str = request.args['living_situation'] # type: ignore
+    if living_situation.isnumeric():
+        living_situation = listings.living_situations[listings.living_situations['id'] == int(living_situation)]['name'].iloc[0] \
+                if int(living_situation) in listings.living_situations['id'] else 'None'
     service: str = request.args['service'] # type: ignore
+    if service.isnumeric():
+        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_id'] else 'None'
     if not (social_group in get_social_groups(to_list=True) and living_situation in get_living_situations(to_list=True) \
                 and service in get_services(to_list=True)):
         return make_response(jsonify({'error': f"At least one of the ('social_group', 'living_situation', 'service') is not in the list of avaliable"
@@ -759,8 +784,17 @@ def atomic_provision() -> Response:
 @app.route('/api/provision/aggregated/', methods=['GET'])
 def aggregated_provision() -> Response:
     social_group: Optional[str] = request.args.get('social_group')
+    if social_group and social_group.isnumeric():
+        social_group = listings.social_groups[listings.social_groups['id'] == int(social_group)]['name'].iloc[0] \
+                if int(social_group) in listings.social_groups['id'] else 'None'
     living_situation: Optional[str] = request.args.get('living_situation')
+    if living_situation and living_situation.isnumeric():
+        living_situation = listings.living_situations[listings.living_situations['id'] == int(living_situation)]['name'].iloc[0] \
+                if int(living_situation) in listings.living_situations['id'] else 'None'
     service: Optional[str] = request.args.get('service')
+    if service and service.isnumeric():
+        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_id'] else 'None'
     location: Optional[str] = request.args.get('location')
     if not ((social_group is None or social_group == 'all' or social_group in get_social_groups(to_list=True))
             and (living_situation is None or living_situation == 'all' or living_situation in get_living_situations(to_list=True))
@@ -843,8 +877,17 @@ def aggregated_provision() -> Response:
 @app.route('/api/provision/alternative/', methods=['GET'])
 def alternative_aggregated_provision():
     social_group: Optional[str] = request.args.get('social_group')
+    if social_group and social_group.isnumeric():
+        social_group = listings.social_groups[listings.social_groups['id'] == int(social_group)]['name'].iloc[0] \
+                if int(social_group) in listings.social_groups['id'] else 'None'
     living_situation: Optional[str] = request.args.get('living_situation')
+    if living_situation and living_situation.isnumeric():
+        living_situation = listings.living_situations[listings.living_situations['id'] == int(living_situation)]['name'].iloc[0] \
+                if int(living_situation) in listings.living_situations['id'] else 'None'
     service: Optional[str] = request.args.get('service')
+    if service and service.isnumeric():
+        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_id'] else 'None'
     location: Optional[str] = request.args.get('location')
     if not ((social_group is None or social_group == 'all' or social_group in get_social_groups(to_list=True))
             and (living_situation is None or living_situation == 'all' or living_situation in get_living_situations(to_list=True))
@@ -907,8 +950,17 @@ def alternative_aggregated_provision():
 @app.route('/api/provision/ready/houses/', methods=['GET'])
 def ready_houses() -> Response:
     social_group: Optional[str] = request.args.get('social_group')
+    if social_group and social_group.isnumeric():
+        social_group = listings.social_groups[listings.social_groups['id'] == int(social_group)]['name'].iloc[0] \
+                if int(social_group) in listings.social_groups['id'] else 'None'
     living_situation: Optional[str] = request.args.get('living_situation')
+    if living_situation and living_situation.isnumeric():
+        living_situation = listings.living_situations[listings.living_situations['id'] == int(living_situation)]['name'].iloc[0] \
+                if int(living_situation) in listings.living_situations['id'] else 'None'
     city_function: Optional[str] = request.args.get('city_function')
+    if city_function and city_function.isnumeric():
+        city_function = listings.city_functions[listings.city_functions['id'] == int(city_function)]['name'].iloc[0] \
+                if int(city_function) in listings.city_functions['id'] else 'None'
     house: Tuple[Optional[float], Optional[float]]
     if 'house' in request.args:
         house = tuple(map(float, request.args['house'].split(','))) # type: ignore
@@ -944,9 +996,21 @@ def ready_houses() -> Response:
 @app.route('/api/provision/ready/districts/', methods=['GET'])
 def ready_districts() -> Response:
     social_group: Optional[str] = request.args.get('social_group')
+    if social_group and social_group.isnumeric():
+        social_group = listings.social_groups[listings.social_groups['id'] == int(social_group)]['name'].iloc[0] \
+                if int(social_group) in listings.social_groups['id'] else 'None'
     living_situation: Optional[str] = request.args.get('living_situation')
+    if living_situation and living_situation.isnumeric():
+        living_situation = listings.living_situations[listings.living_situations['id'] == int(living_situation)]['name'].iloc[0] \
+                if int(living_situation) in listings.living_situations['id'] else 'None'
     city_function: Optional[str] = request.args.get('city_function')
+    if city_function and city_function.isnumeric():
+        city_function = listings.city_functions[listings.city_functions['id'] == int(city_function)]['name'].iloc[0] \
+                if int(city_function) in listings.city_functions['id'] else 'None'
     district: Optional[str] = request.args.get('district', None, type=str)
+    if district and district.isnumeric():
+        district = city_hierarchy[city_hierarchy['district_id'] == int(district)]['district_full_name'] \
+                if int(district) in city_hierarchy['district_id'] else 'None'
     with properties.provision_conn.cursor() as cur:
         cur_str = 'SELECT soc.name, liv.name, fun.name, dist.full_name, avg_provision' \
             ' FROM aggregation_district a JOIN living_situations liv ON liv.id = a.living_situation_id' \
@@ -978,9 +1042,21 @@ def ready_districts() -> Response:
 @app.route('/api/provision/ready/municipalities/', methods=['GET'])
 def ready_municipalities() -> Response:
     social_group: Optional[str] = request.args.get('social_group')
+    if social_group and social_group.isnumeric():
+        social_group = listings.social_groups[listings.social_groups['id'] == int(social_group)]['name'].iloc[0] \
+                if int(social_group) in listings.social_groups['id'] else 'None'
     living_situation: Optional[str] = request.args.get('living_situation')
+    if living_situation and living_situation.isnumeric():
+        living_situation = listings.living_situations[listings.living_situations['id'] == int(living_situation)]['name'].iloc[0] \
+                if int(living_situation) in listings.living_situations['id'] else 'None'
     city_function: Optional[str] = request.args.get('city_function')
+    if city_function and city_function.isnumeric():
+        city_function = listings.city_functions[listings.city_functions['id'] == int(city_function)]['name'].iloc[0] \
+                if int(city_function) in listings.city_functions['id'] else 'None'
     municipality: Optional[str] = request.args.get('municipality', None, type=str)
+    if municipality and municipality.isnumeric():
+        municipality = city_hierarchy[city_hierarchy['municipality_id'] == int(municipality)]['municipality_full_name'] \
+                if int(municipality) in city_hierarchy['municipality_id'] else 'None'
     with properties.provision_conn.cursor() as cur:
         cur_str = 'SELECT soc.name, liv.name, fun.name, muni.full_name, avg_provision' \
             ' FROM aggregation_municipality a JOIN living_situations liv ON liv.id = a.living_situation_id' \
@@ -1017,8 +1093,8 @@ def houses_in_square() -> Response:
     point_2: Tuple[int, int] = tuple(map(float, request.args['secondPoint'].split(','))) # type: ignore
     with properties.houses_conn.cursor() as cur:
         cur.execute("SELECT DISTINCT ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float, ROUND(ST_Y(ST_Centroid(geometry))::numeric, 3)::float FROM houses"
-                " WHERE ST_WITHIN(geometry, ST_POLYGON(text('LINESTRING({lat1} {lan1}, {lat1} {lan2}, {lat2} {lan2}, {lat2} {lan1}, {lat1} {lan1})'), 4326))".format(
-            lat1=point_1[0], lan1 = point_1[1], lat2 = point_2[0], lan2 = point_2[1]
+                " WHERE ST_WITHIN(geometry, ST_POLYGON(text('LINESTRING({lat1} {lng1}, {lat1} {lan2}, {lat2} {lan2}, {lat2} {lng1}, {lat1} {lng1})'), 4326))".format(
+            lat1=point_1[0], lng1 = point_1[1], lat2 = point_2[0], lan2 = point_2[1]
         ))
         return make_response(jsonify({
             '_links': {'self': {'href': request.path}},
@@ -1033,6 +1109,12 @@ def houses_in_square() -> Response:
         ))
 
 def get_social_groups(service: Optional[str] = None, living_situation: Optional[str] = None, to_list: bool = False) -> Union[List[str], pd.DataFrame]:
+    if service and service.isnumeric():
+        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_id'] else 'None'
+    if living_situation and living_situation.isnumeric():
+        living_situation = listings.living_situations[listings.living_situations['id'] == int(living_situation)]['name'].iloc[0] \
+                if int(living_situation) in listings.living_situations['id'] else 'None'
     res = needs[(needs['significance'] > 0) & (needs['intensity'] > 0)]
     if service is None:
         res = res.drop(['service', 'significance'], axis=True)
@@ -1050,7 +1132,8 @@ def get_social_groups(service: Optional[str] = None, living_situation: Optional[
 @app.route('/api/relevance/social_groups', methods=['GET'])
 @app.route('/api/relevance/social_groups/', methods=['GET'])
 def relevant_social_groups() -> Response:
-    res = get_social_groups(request.args.get('service'), request.args.get('living_situation')) # type: pd.DataFrame
+    res: pd.DataFrame = get_social_groups(request.args.get('service'), request.args.get('living_situation'))
+    ids = list(listings.social_groups[listings.social_groups['name'].isin(res)]['id'])
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
@@ -1058,14 +1141,16 @@ def relevant_social_groups() -> Response:
                 'service': request.args.get('service'),
                 'living_situation': request.args.get('living_situation')
             },
-            'social_groups': list(res.drop_duplicates().replace({np.nan: None}).transpose().to_dict().values())
+            'social_groups': list(res.drop_duplicates().replace({np.nan: None}).transpose().to_dict().values()),
+            'social_groups_ids': ids
         }
     }))
 
 @app.route('/api/list/social_groups', methods=['GET'])
 @app.route('/api/list/social_groups/', methods=['GET'])
 def list_social_groups() -> Response:
-    res = get_social_groups(request.args.get('service'), request.args.get('living_situation'), to_list=True) # type: List[str]
+    res: List[str] = sorted(get_social_groups(request.args.get('service'), request.args.get('living_situation'), to_list=True))
+    ids = list(listings.social_groups[listings.social_groups['name'].isin(res)]['id'])
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
@@ -1073,12 +1158,19 @@ def list_social_groups() -> Response:
                 'service': request.args.get('city_function'),
                 'living_situation': request.args.get('living_situation')
             },
-            'social_groups': res
+            'social_groups': res,
+            'social_groups_ids': ids
         }
     }))
 
 
 def get_city_functions(social_group: Optional[str] = None, living_situation: Optional[str] = None, to_list: bool = False) -> Union[List[str], pd.DataFrame]:
+    if social_group and social_group.isnumeric():
+        social_group = listings.social_groups[listings.social_groups['id'] == int(social_group)]['name'].iloc[0] \
+                if int(social_group) in listings.social_groups['id'] else 'None'
+    if living_situation and living_situation.isnumeric():
+        living_situation = listings.living_situations[listings.living_situations['id'] == int(living_situation)]['name'].iloc[0] \
+                if int(living_situation) in listings.living_situations['id'] else 'None'
     res = needs[(needs['significance'] > 0) & (needs['intensity'] > 0) & needs['service'].isin(infrastructure['service'].dropna().unique())]
     if social_group is None:
         res = res.drop(['social_group', 'significance'], axis=True)
@@ -1096,7 +1188,8 @@ def get_city_functions(social_group: Optional[str] = None, living_situation: Opt
 @app.route('/api/relevance/city_functions', methods=['GET'])
 @app.route('/api/relevance/city_functions/', methods=['GET'])
 def relevant_city_functions() -> Response:
-    res = get_city_functions(request.args.get('social_group'), request.args.get('living_situation')) # type: pd.DataFrame
+    res: pd.DataFrame = get_city_functions(request.args.get('social_group'), request.args.get('living_situation'))
+    ids = list(listings.city_functions[listings.city_functions['name'].isin(res)]['id'])
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
@@ -1104,14 +1197,17 @@ def relevant_city_functions() -> Response:
                 'social_group': request.args.get('social_group'),
                 'living_situation': request.args.get('living_situation')
             },
-            'city_functions': list(res.drop_duplicates().replace({np.nan: None}).transpose().to_dict().values())
+            'city_functions': list(res.drop_duplicates().replace({np.nan: None}).transpose().to_dict().values()),
+            'city_functions_ids': ids
         }
     }))
 
 @app.route('/api/list/city_functions', methods=['GET'])
 @app.route('/api/list/city_functions/', methods=['GET'])
 def list_city_functions() -> Response:
-    res = get_city_functions(request.args.get('social_group'), request.args.get('living_situation'), to_list=True) # type: List[str]
+    res: List[str] = sorted(get_city_functions(request.args.get('social_group'), request.args.get('living_situation'), to_list=True))
+    ids = list(infrastructure[infrastructure['function'].isin(res)][['function_id', 'function']].drop_duplicates() \
+            .sort_values('function')['function_id'])
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
@@ -1119,11 +1215,18 @@ def list_city_functions() -> Response:
                 'social_group': request.args.get('social_group'),
                 'living_situation': request.args.get('living_situation')
             },
-            'city_functions': res
+            'city_functions': res,
+            'city_functions_ids': ids
         }
     }))
 
 def get_services(social_group: Optional[str] = None, living_situation: Optional[str] = None, to_list: bool = False) -> Union[List[str], pd.DataFrame]:
+    if social_group and social_group.isnumeric():
+        social_group = listings.social_groups[listings.social_groups['id'] == int(social_group)]['name'].iloc[0] \
+                if int(social_group) in listings.social_groups['id'] else 'None'
+    if living_situation and living_situation.isnumeric():
+        living_situation = listings.living_situations[listings.living_situations['id'] == int(living_situation)]['name'].iloc[0] \
+                if int(living_situation) in listings.living_situations['id'] else 'None'
     res = needs[(needs['significance'] > 0) & (needs['intensity'] > 0) & needs['service'].isin(infrastructure['service'].dropna().unique())]
     if social_group is None:
         res = res.drop(['social_group', 'significance'], axis=True)
@@ -1141,7 +1244,9 @@ def get_services(social_group: Optional[str] = None, living_situation: Optional[
 @app.route('/api/list/services', methods=['GET'])
 @app.route('/api/list/services/', methods=['GET'])
 def list_services() -> Response:
-    res = get_services(request.args.get('social_group'), request.args.get('living_situation'), to_list=True) # type: List[str]
+    res: List[str] = sorted(get_services(request.args.get('social_group'), request.args.get('living_situation'), to_list=True))
+    ids = list(infrastructure[infrastructure['service'].isin(res)][['service_id', 'service']].drop_duplicates() \
+            .sort_values('service')['service_id'])
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
@@ -1149,11 +1254,18 @@ def list_services() -> Response:
                 'social_group': request.args.get('social_group'),
                 'living_situation': request.args.get('living_situation')
             },
-            'services': res
+            'services': res,
+            'services_ids': ids
         }
     }))
 
 def get_living_situations(social_group: Optional[str] = None, service: Optional[str] = None, to_list: bool = False) -> Union[List[str], pd.DataFrame]:
+    if social_group and social_group.isnumeric():
+        social_group = listings.social_groups[listings.social_groups['id'] == int(social_group)]['name'].iloc[0] \
+                if int(social_group) in listings.social_groups['id'] else 'None'
+    if service and service.isnumeric():
+        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_id'] else 'None'
     res = needs[(needs['significance'] > 0) & (needs['intensity'] > 0)]
     if social_group is not None and service is not None:
         res = res[(res['social_group'] == social_group) & (res['service'] == service)].drop(['service', 'social_group'], axis=True)
@@ -1171,7 +1283,8 @@ def get_living_situations(social_group: Optional[str] = None, service: Optional[
 @app.route('/api/relevance/living_situations', methods=['GET'])
 @app.route('/api/relevance/living_situations/', methods=['GET'])
 def relevant_living_situations() -> Response:
-    res = get_living_situations(request.args.get('social_group'), request.args.get('service')) # type: pd.DataFrame
+    res: pd.DataFrame = get_living_situations(request.args.get('social_group'), request.args.get('service'))
+    ids = list(listings.living_situations[listings.living_situations['name'].isin(res)]['id'])
     significance: Optional[int] = None
     if 'significance' in res.columns:
         if res.shape[0] > 0:
@@ -1185,14 +1298,16 @@ def relevant_living_situations() -> Response:
                 'service': request.args.get('service'),
                 'significance': significance
             },
-            'living_situations': list(res.drop_duplicates().transpose().to_dict().values())
+            'living_situations': list(res.drop_duplicates().transpose().to_dict().values()),
+            'living_situations_ids': ids
         }
     }))
 
 @app.route('/api/list/living_situations', methods=['GET'])
 @app.route('/api/list/living_situations/', methods=['GET'])
 def list_living_situations() -> Response:
-    res = get_living_situations(request.args.get('social_group'), request.args.get('service'), to_list=True) # type: List[str]
+    res: List[str] = sorted(get_living_situations(request.args.get('social_group'), request.args.get('service'), to_list=True))
+    ids = list(listings.living_situations[listings.living_situations['name'].isin(res)]['id'])
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
@@ -1200,7 +1315,8 @@ def list_living_situations() -> Response:
                 'social_group': request.args.get('social_group'),
                 'service': request.args.get('service'),
             },
-            'living_situations': res
+            'living_situations': res,
+            'living_situations_ids': ids
         }
     }))
 
@@ -1214,29 +1330,33 @@ def list_infrastructures() -> Response:
                 'name': infra,
                 'functions': tuple([{
                     'name': function,
-                    'services': tuple([service for service in infrastructure[infrastructure['function'] == function].dropna()['service']])
-                } for function in infrastructure[infrastructure['infrastructure'] == infra].dropna()['function'].unique()])
-            } for infra in infrastructure['infrastructure'].unique()])
+                    'services': tuple([service for service in sorted(infrastructure[infrastructure['function'] == function].dropna()['service'])])
+                } for function in sorted(infrastructure[infrastructure['infrastructure'] == infra].dropna()['function'].unique())])
+            } for infra in sorted(infrastructure['infrastructure'].unique())])
         }
     }))
 
 @app.route('/api/list/districts', methods=['GET'])
 @app.route('/api/list/districts/', methods=['GET'])
 def list_districts() -> Response:
+    districts = city_hierarchy[['district_id', 'district_full_name']].drop_duplicates().sort_values('district_full_name')
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
-            'districts': list(city_hierarchy['district_full_name'].unique())
+            'districts': list(districts['district_full_name']),
+            'districts_ids': list(districts['district_id'])
         }
     }))
 
 @app.route('/api/list/municipalities', methods=['GET'])
 @app.route('/api/list/municipalities/', methods=['GET'])
 def list_municipalities() -> Response:
+    municipalities = city_hierarchy[['municipality_id', 'municipality_full_name']].drop_duplicates().sort_values('municipality_full_name')
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
-            'municipalities': list(city_hierarchy['municipality_full_name'])
+            'municipalities': list(municipalities['municipality_full_name']),
+            'municipalities_ids': list(municipalities['municipality_id'])
         }
     }))
 
@@ -1282,7 +1402,7 @@ def list_city_hierarchy() -> Response:
 @app.route('/api/', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2021-05-10-quickfix',
+        'version': '2021-05-26',
         '_links': {
             'self': {
                 'href': request.path
@@ -1368,11 +1488,11 @@ def api_help() -> Response:
                 'templated': True
             },
             'provision_v3_prosperity_districts': {
-                'href': '/api/provision_v3/prosperity/districts/{?district,service,social_group}',
+                'href': '/api/provision_v3/prosperity/districts/{?district,service,city_function,infrastructure,social_group,provision_only}',
                 'templated': True
             },
             'provision_v3_prosperity_municipalities': {
-                'href': '/api/provision_v3/prosperity/municipalities/{?district,municipality,service,social_group}',
+                'href': '/api/provision_v3/prosperity/municipalities/{?district,municipality,service,city_function,infrastructure,social_group,provision_only}',
                 'templated': True
             }
         }
@@ -1381,11 +1501,15 @@ def api_help() -> Response:
 @app.route('/api/provision_v3/services', methods=['GET'])
 @app.route('/api/provision_v3/services/', methods=['GET'])
 def provision_v3_services() -> Response:
+    service = request.args.get('service')
+    if service and service.isnumeric():
+        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_id'] else 'None'
     with properties.houses_conn.cursor() as cur:
         cur.execute('SELECT s.service_type, s.service_name, s.district_name, s.municipal_name, s.block_id, s.address,'
                 '    v.houses_in_radius, v.people_in_radius, v.service_load, v.needed_capacity, v.reserve_resource, v.evaluation'
                 ' FROM all_services s JOIN functional_objects_values v ON s.func_id = v.functional_object_id' + 
-                (' WHERE s.service_type = %s' if 'service' in request.args else ''), ((request.args['service'],) if 'service' in request.args else ()))
+                (' WHERE s.service_type = %s' if 'service' in request.args else ''), ((service,) if 'service' in request.args else ()))
         df = pd.DataFrame(cur.fetchall(), columns=('service_type', 'service_name', 'district', 'municipality', 'block', 'address', 'houses_in_access',
                 'people_in_access', 'service_load', 'needed_capacity', 'reserve_resource', 'evaluation'))
         df['block'] = df['block'].replace({np.nan, None})
@@ -1396,7 +1520,7 @@ def provision_v3_services() -> Response:
             '_embedded': {
                 'services': list(df.replace().transpose().to_dict().values()),
                 'parameters': {
-                    'service': request.args.get('service'),
+                    'service': service,
                     'response_services_count': df.shape[0]
                 }
             }
@@ -1428,6 +1552,15 @@ def provision_v3_prosperity() -> Response:
         'service': request.args.get('service'),
         'location': request.args.get('location')
     }
+    social_group = request.args.get('social_group')
+    if social_group and social_group.isnumeric():
+        parameters['social_group'] = listings.social_groups[listings.social_groups['id'] == int(social_group)]['name'].iloc[0] \
+                if int(social_group) in listings.social_groups['id'] else 'None'
+    service = request.args.get('service')
+    if service and service.isnumeric():
+        parameters['service'] = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_id'] else 'None'
+    del social_group, service
 
     provision: Optional[float] = None
     if parameters['location'] and parameters['service']:
@@ -1488,10 +1621,51 @@ def provision_v3_prosperity() -> Response:
 @app.route('/api/provision_v3/prosperity/<location_type>/', methods=['GET'])
 def provision_v3_prosperity_multiple(location_type: str) -> Response:
     assert location_type in ('districts', 'municipalities')
-    social_group = request.args.get('social_group')
-    service = request.args.get('service', 'all')
-    district = request.args.get('district', 'all')
-    municipality = request.args.get('municipality', 'all')
+    social_group: str = request.args.get('social_group', 'all')
+    if social_group.isnumeric():
+        social_group = listings.social_groups[listings.social_groups['id'] == int(social_group)]['name'].iloc[0] \
+                if int(social_group) in listings.social_groups['id'] else 'None'
+    service: Optional[str] = request.args.get('service')
+    if service and service.isnumeric():
+        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in list(infrastructure['service_id']) else 'None'
+    city_function: Optional[str] = request.args.get('city_function')
+    if city_function and city_function.isnumeric():
+        city_function = infrastructure[infrastructure['function'] == int(city_function)]['function'].iloc[0] \
+                if int(city_function) in list(infrastructure['function'].unique()) else 'None'
+    infra: Optional[str] = request.args.get('infrastructure')
+    if infra and infra.isnumeric():
+        infra = infrastructure[infrastructure['infrastructure'] == int(infra)]['infrastructure'].iloc[0] \
+                if int(infra) in list(infrastructure['infrastructure'].unique()) else 'None'
+    if 'provision_only' in request.args and request.args['provision_only'] not in ('0', 'false', '-'):
+        provision_only = True
+    else:
+        provision_only = False
+
+    aggregation_type = 'service'
+    aggregation_value = service
+    if service is None and city_function is None and infra is None:
+        service = 'all'
+        aggregation_value = 'all'
+    elif service: 
+        city_function = infra = None
+    elif city_function:
+        infra = None
+        aggregation_type = 'function'
+        aggregation_value = city_function
+    else:
+        aggregation_type = 'infrastructure'
+        aggregation_value = infra
+
+    district: Optional[str] = request.args.get('district', 'all')
+    if district and district.isnumeric():
+        district = city_hierarchy[city_hierarchy['district_id'] == int(district)]['district_full_name'].iloc[0] \
+                if int(district) in city_hierarchy['district_id'] else 'None'
+    municipality: Optional[str] = request.args.get('municipality', 'all')
+    if municipality and municipality.isnumeric():
+        municipality = city_hierarchy[city_hierarchy['municipality_id'] == int(municipality)]['municipality_full_name'].iloc[0] \
+                if int(municipality) in city_hierarchy['municipality_id'] else 'None'
+
     if location_type == 'districts':
         municipality = None
         res = provision_districts
@@ -1499,42 +1673,72 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
         res = provision_municipalities
         if district == 'all':
             district = None
-    if municipality and municipality != 'all':
+
+    if municipality and municipality not in ('all', 'mean'):
         res = res[res['municipality'] == municipality]
     elif location_type == 'municipalities':
-        if district != 'all':
+        if district and district not in ('all', 'mean'):
             municipalities_in_district = city_hierarchy[city_hierarchy['district_full_name'] == district]['municipality_full_name']
             res = res[res['municipality'].isin(municipalities_in_district)]
-    elif district != 'all':
+    elif district and district not in ('all', 'mean'):
         res = res[res['district'] == district]
-    n: pd.DataFrame = needs[['service', 'social_group', 'significance']]
-    n = n.groupby(['service', 'social_group']).mean().reset_index()
-    if service != 'all':
-        n = n[n['service'] == service]
-    if social_group == 'all':
-        n = n.groupby(['service'])['significance'].mean().reset_index()
-    elif social_group is not None:
-        n = n[n['social_group'] == social_group][['service', 'significance']]
-    res = res.merge(n, how='inner', on='service')
-    n['significance'] = n['significance'].apply(lambda x: round(x, 2))
-    res['prosperity'] = (1 + res['significance'] * (res['provision'] - 1)).apply(lambda x: round(x, 2))
+
+    if not provision_only:
+        n: pd.DataFrame = needs[['service', 'social_group', 'significance']].merge(
+                infrastructure[['service', 'function', 'infrastructure']], how='inner', on='service')[[aggregation_type, 'social_group', 'significance']]
+        n = n.groupby([aggregation_type, 'social_group']).mean().reset_index()
+        if aggregation_value not in ('all', 'mean'):
+            n = n[n[aggregation_type] == aggregation_value]
+        elif social_group not in ('all', 'mean'):
+            n = n[n['social_group'] == social_group][[aggregation_type, 'significance']]
+
+        res = res.merge(infrastructure[['service', 'function', 'infrastructure']], how='inner', on='service') \
+                [['district' if location_type == 'districts' else 'municipality', aggregation_type, 'provision']]
+        res = res.merge(n, how='inner', on=aggregation_type)
+
+    aggregation_labels: List[str] = []
+    if aggregation_value == 'mean':
+        aggregation_labels.append(aggregation_type)
+    if social_group == 'mean' and not provision_only:
+        aggregation_labels.append('social_group')
+    if district == 'mean' or municipality == 'mean':
+        aggregation_labels.append('district' if location_type == 'districts' else 'municipality')
+    if len(aggregation_labels) != 0:
+        print(res)
+        res = res.drop(aggregation_labels, axis=True)
+        if len(aggregation_labels) == 3:
+            res = pd.DataFrame(res.mean()).transpose()
+        else:
+            res = res.groupby(
+                    list(set((aggregation_type, 'district' if location_type == 'districts' else 'municipality', 'social_group')) - set(aggregation_labels))
+            ).mean().reset_index()
+
+    if not provision_only:
+        res['prosperity'] = (1 + res['significance'] * (res['provision'] - 1)).apply(lambda x: round(x, 2))
+        res['provision'] = res['provision'].apply(lambda x: round(x, 2))
+        res['significance'] = res['significance'].apply(lambda x: round(x, 2))
     
+    parameters = {
+        'aggregation_type': aggregation_type,
+        'aggregation_value': aggregation_value,
+        'district': district,
+    }
+    if location_type == 'municipalities':
+        parameters['municipality'] = municipality
+    if not provision_only:
+        parameters['social_group'] = social_group
+
+
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
-            'prosperity': list(res.transpose().to_dict().values()),
-            'parameters': {
-                'location_type': location_type,
-                'service': service,
-                'district': district,
-                'municipality': municipality,
-                'social_group': social_group
-            }
+            'prosperity': list(res.transpose().replace({np.nan, None}).to_dict().values()),
+            'parameters': parameters
         }
     }))
 
 @app.errorhandler(404)
-def not_found(error):
+def not_found(_):
     return make_response(jsonify({'error': 'Not found'}), 404)
 
 @app.errorhandler(Exception)
