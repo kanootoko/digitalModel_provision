@@ -46,13 +46,13 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -T,--transport_model_endpoint \<str\> - tranaport_model_endpoint
 * -S,--aggregate_target \<str\>- aggregation_target
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-05-26)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-06-02)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-05-26 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-06-02 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-05-26`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-05-26`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-06-02`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-06-02`  
       Ensure that:
         1. _/etc/postgresql/\<version\>/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/\<version\>/main/pg\_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
@@ -90,7 +90,10 @@ At this moment there are endpoints:
 * **/api/provision/ready/municipalities**: returns the list of already aggregated by municipalities provision values.
   Takes parameters by query. You can set `social_group`, `service`, `living_situation` or `municipality` parameter to specify the request.
 * **/api/provision_v3/ready**: returns the list of calculated service types with the number of them.
-* **/api/provision_v3/services**: returns the list of conctere services with their provision evaluation.
+* **/api/provision_v3/services**: returns the list of conctere services with their provision evaluation. Takes `service` and `location` as optional parameters.
+  `service` can be one of the services calculated (by name or by id), `location` is a district or municipality by full or short name.
+* **/api/provision_v3/houses**: returns the list of houses with their services provision. At least one of the `service` and `location` parameters must be set.
+  `location` can be municipality or district given as short or full name, `service` - service type given by id or by name.
 * **/api/provision_v3/prosperity**: returns the prosperity value of a service type for a given social froup in a given location (district or municipality).
 * **/api/provision_v3/prosperity/municipalities**: returns the prosperity value of municipalities. Takes `social_group`, `service`/`city_function`/`infrastructure`,
   `district`/`municipality` and `provision_only` as optional parameters. If `district` is set, returns prosperity of municipalities of a given district.
@@ -98,7 +101,7 @@ At this moment there are endpoints:
   can be set to "mean" to return mean value of the column.
 * **/api/provision_v3/prosperity/districts**: returns the prosperity value of districts. Takes social_group, `service`/`city_function`/`infrastructure`,
   `district` and `provision_only` as optional parameters. Each pameter except of `provision_only` is "all" if not given - that means that every column will
-  be returned. Each parameter except of `provision_only` can be set to "mean" to return mean value of the column
+  be returned. Each parameter except of `provision_only` can be set to "mean" to return mean value of the column.
 * **/api/list/social_groups**: returns list of social groups. If you specify a city_function and/or living_situation,
   only relative social groups will be returned.
 * **/api/list/city_functions**: returns a list of city functions. If you specify a social_group and/or living_situation,
@@ -178,7 +181,11 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
       "href": "/api/provision_v3/ready/"
     },
     "provision_v3_services": {
-      "href": "/api/provision_v3/services/{?service}",
+      "href": "/api/provision_v3/services/{?service,location}",
+      "templated": true
+    },
+    "provision_v3_houses" : {
+      "href": "/api/provision_v3/houses{?service,location}",
       "templated": true
     },
     "provision_v3_prosperity": {
