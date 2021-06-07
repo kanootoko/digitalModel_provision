@@ -1557,7 +1557,7 @@ def provision_v3_services() -> Response:
 def provision_v3_houses() -> Response:
     service = request.args.get('service')
     if service and not service.isnumeric():
-        service = infrastructure[infrastructure['service'] == service]['service_id'].iloc[0] \
+        service = int(infrastructure[infrastructure['service'] == service]['service_id'].iloc[0]) \
                 if service in list(infrastructure['service']) else None
     elif service:
         service = int(service)
@@ -1798,7 +1798,7 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
         n = n.groupby([aggregation_type, 'social_group']).mean().reset_index()
         if aggregation_value not in ('all', 'mean'):
             n = n[n[aggregation_type] == aggregation_value]
-        elif social_group not in ('all', 'mean'):
+        if social_group not in ('all', 'mean'):
             n = n[n['social_group'] == social_group][[aggregation_type, 'significance']]
 
         res = res.merge(infrastructure[['service', 'function', 'infrastructure']], how='inner', on='service') \
