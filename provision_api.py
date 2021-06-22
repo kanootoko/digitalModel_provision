@@ -516,7 +516,7 @@ def get_aggregation(where: Union[str, Tuple[float, float]], where_type: str, soc
         with houses_conn.cursor() as cur_houses:
             cur_houses.execute('SELECT sum(ss.number) FROM social_structure ss'
                     ' INNER JOIN social_groups sg on ss.social_group_id = sg.id'
-                    ' WHERE house_id in (SELECT id from houses WHERE ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float = %s'
+                    ' WHERE house_id in (SELECT residential_object_id from houses WHERE ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float = %s'
                     ' AND ROUND(ST_Y(ST_Centroid(geometry))::numeric, 3)::float = %s)', (house[0], house[1]))
             res = cur_houses.fetchall()
             if len(soc_groups) != 1:
@@ -528,7 +528,7 @@ def get_aggregation(where: Union[str, Tuple[float, float]], where_type: str, soc
                     for social_group in groups_provision.keys():
                         cur_houses.execute('SELECT ss.number FROM social_structure ss'
                                 ' INNER JOIN social_groups sg on ss.social_group_id = sg.id'
-                                ' WHERE house_id in (SELECT id FROM houses WHERE ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float = %s'
+                                ' WHERE house_id in (SELECT residential_object_id FROM houses WHERE ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float = %s'
                                 ' AND ROUND(ST_Y(ST_Centroid(geometry))::numeric, 3)::float = %s) AND sg.name = %s union select 0', (house[0], house[1], social_group))
                         number = cur_houses.fetchall()[0][0]
                         provision_group += groups_provision[social_group][0] * number / cnt_functions
@@ -1648,7 +1648,7 @@ def provision_v3_houses() -> Response:
             }
         }), 400)
     with properties.houses_conn.cursor() as cur:
-        cur.execute('SELECT h.id, h.address, ST_AsGeoJSON(h.center), d.full_name AS district, m.full_name AS municipality,'
+        cur.execute('SELECT h.residential_object_id, h.address, ST_AsGeoJSON(h.center), d.full_name AS district, m.full_name AS municipality,'
                 ' h.block_id, s.name as service, p.reserve_resource, p.provision FROM houses_provision p JOIN houses h ON p.house_id = h.id'
                 ' JOIN districts d ON h.district_id = d.id JOIN municipalities m ON h.municipality_id = m.id'
                 ' JOIN service_types s ON p.service_type_id = s.id' + 
@@ -1712,7 +1712,8 @@ def house_services(house_id: int) -> Response:
                 radius = res[0]
         elif 'radius' not in request.args:
             radius = default_radius
-        cur.execute('SELECT func_id, service_name, ST_AsGeoJSON(center) FROM all_services WHERE ST_Within(center, ST_Buffer((SELECT center FROM houses WHERE id = %s)::geography, %s)::geometry)' +
+        cur.execute('SELECT func_id, service_name, ST_AsGeoJSON(center) FROM all_services'
+                ' WHERE ST_Within(center, ST_Buffer((SELECT center FROM houses WHERE residential_object_id = %s)::geography, %s)::geometry)' +
                 (' AND service_type = %s' if 'service' in request.args else ''), ((house_id, radius, service) if 'service' in request.args else (house_id, radius,)))
         services = [{'id': func_id, 'name': name, 'center': json.loads(center)} for func_id, name, center in cur.fetchall()]
     return make_response(jsonify({
