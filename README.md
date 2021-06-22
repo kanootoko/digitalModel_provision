@@ -876,7 +876,7 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
 }
 ```
 
-:service_id - int, id of functional_object in database
+:service_id - int, id of functional_object in database  
 :response_services_count - int, size of returned "services" array  
 :district_short_name, :municipality_short_name, :address - string (or null)  
 :block_id - integer (or null)  

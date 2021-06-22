@@ -1543,7 +1543,7 @@ def provision_v3_services() -> Response:
         df_servs = pd.DataFrame(cur.fetchall(),
                 columns=('service_type', 'normative', 'max_load', 'radius_meters', 'public_transport_time')[(1 if 'service' in request.args else 0):])
     df['center'] = df['center'].apply(json.loads)
-    df['block'] = df['block'].replace({np.nan, None})
+    df['block'] = df['block'].replace({np.nan: None})
     if location is not None:
         if location in city_hierarchy['district_full_name'].unique() or location in city_hierarchy['district_short_name'].unique():
             districts = city_hierarchy[['district_full_name', 'district_short_name']]
@@ -1661,7 +1661,7 @@ def provision_v3_houses() -> Response:
         houses = pd.DataFrame(cur.fetchall(), columns=('id', 'address', 'center', 'district', 'municipality', 'block', 'service', 'reserve_resource', 'provision')).set_index('id')
     houses['center'] = houses['center'].apply(lambda x: json.loads(x))
     gr = houses[['service', 'reserve_resource', 'provision']].groupby('id')
-    houses.replace({np.nan, None})
+    houses.replace({np.nan: None})
     result = []
     for house_id in gr.groups:
         tmp = houses[['address', 'center', 'district', 'municipality', 'block']].loc[house_id]
@@ -1948,7 +1948,7 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
-            'prosperity': list(res.transpose().replace({np.nan, None}).to_dict().values()),
+            'prosperity': list(res.transpose().replace({np.nan: None}).to_dict().values()),
             'parameters': parameters
         }
     }))
