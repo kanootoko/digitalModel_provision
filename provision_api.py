@@ -700,19 +700,21 @@ def update_global_data() -> None:
         blocks = pd.DataFrame(cur.fetchall(), columns=('id', 'population', 'municipality', 'district')).set_index('id')
         blocks['population'] = blocks['population'].replace({np.nan: None})
 
-        cur.execute('SELECT loc.full_name, s.name, eval.evaluation_mean FROM functional_objects_districts eval'
-                ' JOIN districts loc on eval.district_id = loc.id'
-                ' JOIN service_types s on eval.service_id = s.id'
+        cur.execute('SELECT loc.full_name, s.name, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum'
+                ' FROM functional_objects_districts eval'
+                '   JOIN districts loc on eval.district_id = loc.id'
+                '   JOIN service_types s on eval.service_id = s.id'
                 ' ORDER BY 1, 2'
         )
-        provision_districts = pd.DataFrame(cur.fetchall(), columns=('district', 'service', 'provision'))
+        provision_districts = pd.DataFrame(cur.fetchall(), columns=('district', 'service', 'provision', 'reserve_mean', 'reserve_sum'))
 
-        cur.execute('SELECT loc.full_name, s.name, eval.evaluation_mean FROM functional_objects_municipalities eval'
-                ' JOIN municipalities loc on eval.municipality_id = loc.id'
-                ' JOIN service_types s on eval.service_id = s.id'
+        cur.execute('SELECT loc.full_name, s.name, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum'
+                ' FROM functional_objects_municipalities eval'
+                '   JOIN municipalities loc on eval.municipality_id = loc.id'
+                '   JOIN service_types s on eval.service_id = s.id'
                 ' ORDER BY 1, 2'
         )
-        provision_municipalities = pd.DataFrame(cur.fetchall(), columns=('municipality', 'service', 'provision'))
+        provision_municipalities = pd.DataFrame(cur.fetchall(), columns=('municipality', 'service', 'provision', 'reserve_mean', 'reserve_sum'))
 
         cur.execute('SELECT id, name FROM city_functions ORDER BY name')
         city_functions = pd.DataFrame(cur.fetchall(), columns=('id', 'name'))
@@ -1408,7 +1410,7 @@ def list_city_hierarchy() -> Response:
 @app.route('/api/', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2021-06-02',
+        'version': '2021-06-21',
         '_links': {
             'self': {
                 'href': request.path
@@ -1489,8 +1491,16 @@ def api_help() -> Response:
                 'href': '/api/provision_v3/services/{?service,location}',
                 'templated': True
             },
+            'provision_v3_service': {
+                'href': '/api/provision_v3/service/{service_id}/',
+                'templated': True
+            },
             'provision_v3_houses' : {
                 'href': '/api/provision_v3/houses{?service,location}',
+                'templated': True
+            },
+            'provision_v3_house_services': {
+                'href': '/api/provision_v3/house_services/{house_id}/{?service,radius}',
                 'templated': True
             },
             'provision_v3_prosperity': {
@@ -1518,39 +1528,90 @@ def provision_v3_services() -> Response:
     location = request.args.get('location')
     with properties.houses_conn.cursor() as cur:
         cur.execute('SELECT ST_AsGeoJSON(s.center), s.service_type, s.service_name, s.district_name, s.municipal_name, s.block_id, s.address,'
-                '    v.houses_in_radius, v.people_in_radius, v.service_load, v.needed_capacity, v.reserve_resource, v.evaluation as provision'
+                '    v.houses_in_radius, v.people_in_radius, v.service_load, v.needed_capacity, v.reserve_resource, v.evaluation as provision,'
+                '    v.functional_object_id as service_id'
                 ' FROM all_services s JOIN functional_objects_values v ON s.func_id = v.functional_object_id' + 
                 (' WHERE s.service_type = %s' if 'service' in request.args else ''), ((service,) if 'service' in request.args else ()))
-        df = pd.DataFrame(cur.fetchall(), columns=('center', 'service_type', 'service_name', 'district', 'municipality', 'block', 'address', 'houses_in_access',
-                'people_in_access', 'service_load', 'needed_capacity', 'reserve_resource', 'provision'))
-        df['center'] = df['center'].apply(json.loads)
-        df['block'] = df['block'].replace({np.nan, None})
-        if location is not None:
-            if location in city_hierarchy['district_full_name'].unique() or location in city_hierarchy['district_short_name'].unique():
-                districts = city_hierarchy[['district_full_name', 'district_short_name']]
-                df = df[df['district'] == districts[(districts['district_short_name'] == location) |\
-                        (districts['district_full_name'] == location)]['district_short_name'].iloc[0]]
-                df = df.drop('district', axis=True)
-            elif location in city_hierarchy['municipality_full_name'].unique() or location in city_hierarchy['municipality_short_name'].unique():
-                municipalities = city_hierarchy[['municipality_full_name', 'municipality_short_name']]
-                df = df[df['municipality'] == municipalities[(municipalities['municipality_short_name'] == location) | \
-                        (municipalities['municipality_full_name'] == location)]['municipality_short_name'].iloc[0]]
-                df = df.drop(['district', 'municipality'], axis=True)
-            else:
-                location = f'Not found ({location})'
-                df = df.drop(df.index)
+        df = pd.DataFrame(cur.fetchall(), columns=('center', 'service_type', 'service_name', 'district', 'municipality', 'block', 'address',
+                'houses_in_access', 'people_in_access', 'service_load', 'needed_capacity', 'reserve_resource', 'provision', 'service_id'))
         if 'service' in request.args:
-            df = df.drop('service_type', axis=True)
-        return make_response(jsonify({
-            '_links': {'self': {'href': request.path}},
-            '_embedded': {
-                'services': list(df.replace().transpose().to_dict().values()),
-                'parameters': {
-                    'service': service,
-                    'location': location
-                }
+            cur.execute('SELECT normative, max_load, radius_meters, public_transport_time FROM service_types_properties WHERE service_type_id = ' +
+                    ('%s' if request.args['service'].isnumeric() else '(SELECT id FROM service_types WHERE name = %s)'), (request.args['service'],))
+        else:
+            cur.execute('SELECT st.name, p.normative, p.max_load, p.radius_meters, p.public_transport_time FROM service_types_properties p'
+                    ' JOIN service_types st on p.service_type_id = st.id')
+        df_servs = pd.DataFrame(cur.fetchall(),
+                columns=('service_type', 'normative', 'max_load', 'radius_meters', 'public_transport_time')[(1 if 'service' in request.args else 0):])
+    df['center'] = df['center'].apply(json.loads)
+    df['block'] = df['block'].replace({np.nan, None})
+    if location is not None:
+        if location in city_hierarchy['district_full_name'].unique() or location in city_hierarchy['district_short_name'].unique():
+            districts = city_hierarchy[['district_full_name', 'district_short_name']]
+            df = df[df['district'] == districts[(districts['district_short_name'] == location) |\
+                    (districts['district_full_name'] == location)]['district_short_name'].iloc[0]]
+            df = df.drop('district', axis=True)
+        elif location in city_hierarchy['municipality_full_name'].unique() or location in city_hierarchy['municipality_short_name'].unique():
+            municipalities = city_hierarchy[['municipality_full_name', 'municipality_short_name']]
+            df = df[df['municipality'] == municipalities[(municipalities['municipality_short_name'] == location) | \
+                    (municipalities['municipality_full_name'] == location)]['municipality_short_name'].iloc[0]]
+            df = df.drop(['district', 'municipality'], axis=True)
+        else:
+            location = f'Not found ({location})'
+            df = df.drop(df.index)
+    if 'service' in request.args:
+        df = df.drop('service_type', axis=True)
+    return make_response(jsonify({
+        '_links': {
+            'self': {'href': request.path},
+            'service_info': {
+                'href': '/api/provision_v3/service/{service_id}',
+                'templated': True
             }
-        }))
+        },
+        '_embedded': {
+            'services': list(df.replace().transpose().to_dict().values()),
+            'services_properties': list(df_servs.replace().transpose().to_dict().values()),
+            'parameters': {
+                'service': service,
+                'location': location
+            }
+        }
+    }))
+
+@app.route('/api/provision_v3/service/<int:service_id>', methods=['GET'])
+@app.route('/api/provision_v3/service/<int:service_id>/', methods=['GET'])
+def provision_v3_service_info(service_id: int) -> Response:
+    service_info = dict()
+    with properties.houses_conn.cursor() as cur:
+        cur.execute('SELECT ST_AsGeoJSON(s.center), s.service_type, s.service_name, s.district_name, s.municipal_name, s.block_id, s.address,'
+                '    v.houses_in_radius, v.people_in_radius, v.service_load, v.needed_capacity, v.reserve_resource, v.evaluation as provision'
+                ' FROM all_services s JOIN functional_objects_values v ON s.func_id = %s AND v.functional_object_id = %s', (service_id, service_id))
+        res = cur.fetchone()
+        if res is None:
+            service_info['service_name'] = 'Not found'
+        else:
+            service_info['center'] = json.loads(res[0])
+            service_info['service_type'] = res[1]
+            service_info['service_name'] = res[2]
+            service_info['district'] = res[3]
+            service_info['municipality'] = res[4]
+            service_info['block'] = res[5]
+            service_info['address'] = res[6]
+            service_info['houses_in_access'] = res[7]
+            service_info['people_in_access'] = res[8]
+            service_info['service_load'] = res[9]
+            service_info['needed_capacity'] = res[10]
+            service_info['reserve_resource'] = res[11]
+            service_info['provision'] = res[12]
+    return make_response(jsonify({
+        '_links': {'self': {'href': request.path}},
+        '_embedded': {
+            'service': service_info,
+            'parameters': {
+                'service_id': service_id
+            }
+        }
+    }), 404 if service_info['service_name'] == 'Not found' else 200)
 
 @app.route('/api/provision_v3/houses', methods=['GET'])
 @app.route('/api/provision_v3/houses/', methods=['GET'])
@@ -1607,6 +1668,7 @@ def provision_v3_houses() -> Response:
         address, center, district, municipality, block = tmp.iloc[0] if isinstance(tmp, pd.DataFrame) else tmp
         services = [{'service': service, 'reserve_resources': reserve, 'provision': provision} for _, (service, reserve, provision) in gr.get_group(house_id).iterrows()]
         result.append({
+            'id': house_id,
             'address': address,
             'center': center,
             'district': district,
@@ -1615,7 +1677,10 @@ def provision_v3_houses() -> Response:
             'services': services
         })
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {
+            'self': {'href': request.path},
+            'services': {'href': '/api/provision_v3/house_services/{house_id}/{?service,radius}', 'templated': True}
+        },
         '_embedded': {
             'parameters': {
                 'service': service,
@@ -1624,6 +1689,44 @@ def provision_v3_houses() -> Response:
             'houses': result
         }
     }))
+
+
+@app.route('/api/provision_v3/house_services/<int:house_id>', methods=['GET'])
+@app.route('/api/provision_v3/house_services/<int:house_id>/', methods=['GET'])
+def house_services(house_id: int) -> Response:
+    default_radius = 500
+    if 'radius' in request.args and request.args['radius'].isnumeric():
+        radius = int(request.args['radius'])
+    service = request.args.get('service')
+    if service and service.isnumeric():
+        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in list(infrastructure['service_id']) else None
+    with properties.houses_conn.cursor() as cur:
+        if 'radius' not in request.args and service:
+            cur.execute('SELECT radius_meters FROM service_types_properties WHERE service_type_id = ' +
+                    ('(SELECT id FROM service_types WHERE name = %s)' if service else ''), (service,))
+            res = cur.fetchone()
+            if res is None or res[0] is None:
+                radius = default_radius
+            else:
+                radius = res[0]
+        elif 'radius' not in request.args:
+            radius = default_radius
+        cur.execute('SELECT func_id, service_name, ST_AsGeoJSON(center) FROM all_services WHERE ST_Within(center, ST_Buffer((SELECT center FROM houses WHERE id = %s)::geography, %s)::geometry)' +
+                (' AND service_type = %s' if 'service' in request.args else ''), ((house_id, radius, service) if 'service' in request.args else (house_id, radius,)))
+        services = [{'id': func_id, 'name': name, 'center': json.loads(center)} for func_id, name, center in cur.fetchall()]
+    return make_response(jsonify({
+        '_links': {'self': {'href': request.path}},
+        '_embedded': {
+            'parameters': {
+                'radius': radius,
+                'house_id': house_id,
+                'service': service
+            },
+            'services': services
+        }
+    }))
+
 
 @app.route('/api/provision_v3/ready', methods=['GET'])
 @app.route('/api/provision_v3/ready/', methods=['GET'])
@@ -1796,14 +1899,15 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
         n: pd.DataFrame = needs[['service', 'social_group', 'significance']].merge(
                 infrastructure[['service', 'function', 'infrastructure']], how='inner', on='service')[[aggregation_type, 'social_group', 'significance']]
         n = n.groupby([aggregation_type, 'social_group']).mean().reset_index()
-        if aggregation_value not in ('all', 'mean'):
-            n = n[n[aggregation_type] == aggregation_value]
         if social_group not in ('all', 'mean'):
             n = n[n['social_group'] == social_group][[aggregation_type, 'significance']]
 
         res = res.merge(infrastructure[['service', 'function', 'infrastructure']], how='inner', on='service') \
                 [['district' if location_type == 'districts' else 'municipality', aggregation_type, 'provision']]
         res = res.merge(n, how='inner', on=aggregation_type)
+
+    if aggregation_value not in ('all', 'mean'):
+        res = res[res[aggregation_type] == aggregation_value]
 
     aggregation_labels: List[str] = []
     if aggregation_value == 'mean':
@@ -1813,18 +1917,22 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
     if district == 'mean' or municipality == 'mean':
         aggregation_labels.append('district' if location_type == 'districts' else 'municipality')
     if len(aggregation_labels) != 0:
-        print(res)
         res = res.drop(aggregation_labels, axis=True)
         aggr = set(res.columns) - {'provision', 'significance'} - set(aggregation_labels)
+        if provision_only:
+            aggr -= {'reserve_mean', 'reserve_sum'}
         if len(aggr) == 0:
             res = pd.DataFrame(res.mean()).transpose()
         else:
             res = res.groupby(list(aggr)).mean().reset_index()
 
     if not provision_only:
-        res['prosperity'] = (1 + res['significance'] * (res['provision'] - 1)).apply(lambda x: round(x, 2))
-        res['provision'] = res['provision'].apply(lambda x: round(x, 2))
+        res['prosperity'] = (10 + res['significance'] * (res['provision'] - 10)).apply(lambda x: round(x, 2))
         res['significance'] = res['significance'].apply(lambda x: round(x, 2))
+    else:
+        res['reserve_mean'] = res['reserve_mean'].apply(lambda x: round(x, 2))
+        res['reserve_sum'] = res['reserve_sum'].apply(lambda x: round(x, 2))
+    res['provision'] = res['provision'].apply(lambda x: round(x, 2))
     
     parameters = {
         'aggregation_type': aggregation_type,

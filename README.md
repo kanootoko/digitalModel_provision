@@ -46,13 +46,13 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -T,--transport_model_endpoint \<str\> - tranaport_model_endpoint
 * -S,--aggregate_target \<str\>- aggregation_target
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-06-02)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-06-21)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-06-02 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-06-21 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-06-02`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-06-02`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-06-21`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-06-21`  
       Ensure that:
         1. _/etc/postgresql/\<version\>/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/\<version\>/main/pg\_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
@@ -94,6 +94,7 @@ At this moment there are endpoints:
   `service` can be one of the services calculated (by name or by id), `location` is a district or municipality by full or short name.
 * **/api/provision_v3/houses**: returns the list of houses with their services provision. At least one of the `service` and `location` parameters must be set.
   `location` can be municipality or district given as short or full name, `service` - service type given by id or by name.
+* **/api/provision_v3/house_services/{house_id}/**: returns the list of services of given service type around the given living house. Can take radius as parameter.
 * **/api/provision_v3/prosperity**: returns the prosperity value of a service type for a given social froup in a given location (district or municipality).
 * **/api/provision_v3/prosperity/municipalities**: returns the prosperity value of municipalities. Takes `social_group`, `service`/`city_function`/`infrastructure`,
   `district`/`municipality` and `provision_only` as optional parameters. If `district` is set, returns prosperity of municipalities of a given district.
@@ -184,8 +185,16 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
       "href": "/api/provision_v3/services/{?service,location}",
       "templated": true
     },
+    "provision_v3_service": {
+      "href": "/api/provision_v3/service/{service_id}",
+      "templated": true
+    },
     "provision_v3_houses" : {
       "href": "/api/provision_v3/houses{?service,location}",
+      "templated": true
+    },
+    "provision_v3_house_services": {
+      "href": "/api/provision_v3/house_services/{house_id}/{?service,radius}",
       "templated": true
     },
     "provision_v3_prosperity": {
@@ -838,6 +847,7 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
     },
     "services": [
       {
+        "service_id": ":service_id",
         "district": ":district_short_name",
         "municipality": ":municipality_short_name",
         "block": ":block_id",
@@ -856,12 +866,17 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
   },
   "_links": {
     "self": {
-      "href": "/api/provision_v3/services/"
+      "href": "/api/provision_v3/services/",
+      "service_info": {
+        "href": "/api/provision_v3/service/{service_id}/",
+        "templated": true
+      }
     }
   }
 }
 ```
 
+:service_id - int, id of functional_object in database
 :response_services_count - int, size of returned "services" array  
 :district_short_name, :municipality_short_name, :address - string (or null)  
 :block_id - integer (or null)  
