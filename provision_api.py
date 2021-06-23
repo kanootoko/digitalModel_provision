@@ -1632,7 +1632,7 @@ def provision_v3_houses() -> Response:
         elif location in city_hierarchy['municipality_full_name'].unique() or location in city_hierarchy['municipality_short_name'].unique():
             municipalities = city_hierarchy[['municipality_id', 'municipality_full_name', 'municipality_short_name']]
             location_tuple = 'municipality', int(municipalities[(municipalities['municipality_short_name'] == location) | \
-                    (municipalities['municipality_full_name'] == location)]['municipality_short_name'].iloc[0])
+                    (municipalities['municipality_full_name'] == location)]['municipality_id'].iloc[0])
         else:
             location = f'{location} (not found)'
     if not location_tuple and not service:
@@ -1641,7 +1641,7 @@ def provision_v3_houses() -> Response:
             '_embedded': {
                 'houses': [],
                 'parameters': {
-                    'location': None,
+                    'location': location,
                     'service': None
                 },
                 'error': "at least one of the 'service' and 'location' must be set in request"
@@ -1653,7 +1653,7 @@ def provision_v3_houses() -> Response:
                 ' JOIN districts d ON h.district_id = d.id JOIN municipalities m ON h.municipality_id = m.id'
                 ' JOIN service_types s ON p.service_type_id = s.id' + 
                 (' WHERE' if location_tuple or service else '') +
-                (' d.id = %s ' if location_tuple and location_tuple[0] == 'district' else 'm.id = %s' if location_tuple and location_tuple[0] == 'municipality' else '') +
+                (' d.id = %s ' if location_tuple and location_tuple[0] == 'district' else ' m.id = %s' if location_tuple and location_tuple[0] == 'municipality' else '') +
                 ('AND' if location_tuple and service else '') +
                 (' s.id = %s' if service else '') +
                 ' ORDER BY p.service_type_id, h.id',
