@@ -78,7 +78,7 @@ class Avaliability:
                 pipe.send(ans)
             return ans
         with properties.provision_conn.cursor() as cur:
-            cur.execute(f'select ST_AsGeoJSON(geometry) from walking where latitude = {lat} and longitude = {lan} and time = {t}')
+            cur.execute(f'SELECT ST_AsGeoJSON(geometry) FROM walking WHERE latitude = {lat} AND longitude = {lan} AND time = {t}')
             res = cur.fetchall()
             if len(res) != 0:
                 if pipe is not None:
@@ -117,14 +117,14 @@ class Avaliability:
                 pipe.send(res)
             return res
         with properties.provision_conn.cursor() as cur:
-            cur.execute(f'SELECT ST_AsGeoJSON(geometry) FROM transport where latitude = {lat} and longitude = {lan} and time = {t}')
+            cur.execute(f'SELECT ST_AsGeoJSON(geometry) FROM transport WHERE latitude = {lat} AND longitude = {lan} AND time = {t}')
             res = cur.fetchall()
             if len(res) != 0:
                 if pipe is not None:
                     pipe.send(res[0][0])
                 return res[0][0]
             if t >= 60:
-                cur.execute(f'SELECT ST_AsGeoJSON(geometry) FROM transport where time = {t} limit 1')
+                cur.execute(f'SELECT ST_AsGeoJSON(geometry) FROM transport WHERE time = {t} LIMIT 1')
                 res = cur.fetchall()
                 if len(res) != 0:
                     if pipe is not None:
@@ -171,14 +171,14 @@ class Avaliability:
                 pipe.send(res)
             return res
         with properties.provision_conn.cursor() as cur:
-            cur.execute(f'select ST_AsGeoJSON(geometry) from car where latitude = {lat} and longitude = {lan} and time = {t}')
+            cur.execute(f'SELECT ST_AsGeoJSON(geometry) FROM car WHERE latitude = {lat} AND longitude = {lan} AND time = {t}')
             res = cur.fetchall()
             if len(res) != 0:
                 if pipe is not None:
                     pipe.send(res[0][0])
                 return res[0][0]
             if t >= 60:
-                cur.execute(f'select ST_AsGeoJSON(geometry) from car where time = {t} limit 1')
+                cur.execute(f'SELECT ST_AsGeoJSON(geometry) FROM car WHERE time = {t} LIMIT 1')
                 res = cur.fetchall()
                 if len(res) != 0:
                     if pipe is not None:
@@ -299,7 +299,7 @@ def compute_atomic_provision(social_group: str, living_situation: str, service: 
     walking_geometry, transport_geometry, car_geometry = avaliability.ensure_ready(*coords, walking_time_cost, transport_time_cost, personal_transport_time_cost)
 
     df_target_servs = services_buildings[
-            services_buildings['service_id'].isin(calculate_services_cnt.count_service(coords, service, walking_time_cost, 'walking', provision_conn, houses_conn))
+            services_buildings['service_type_id'].isin(calculate_services_cnt.count_service(coords, service, walking_time_cost, 'walking', provision_conn, houses_conn))
             &
             (services_buildings['service_type'] == service)
     ]
@@ -310,11 +310,11 @@ def compute_atomic_provision(social_group: str, living_situation: str, service: 
     # transport_geometry = avaliability.get_transport(*coords, transport_time_cost)
 
     transport_servs = services_buildings[
-            services_buildings['service_id'].isin(calculate_services_cnt.count_service(coords, service, transport_time_cost, 'transport', provision_conn, houses_conn))
+            services_buildings['service_type_id'].isin(calculate_services_cnt.count_service(coords, service, transport_time_cost, 'transport', provision_conn, houses_conn))
             &
             (services_buildings['service_type'] == service)
     ]
-    transport_servs = transport_servs.set_index('service_id').drop(df_target_servs['service_id'], errors='ignore').reset_index()
+    transport_servs = transport_servs.set_index('service_type_d').drop(df_target_servs['service_type_id'], errors='ignore').reset_index()
     transport_servs = transport_servs.join(pd.Series(['public_transport'] * transport_servs.shape[0], name='availability_type', dtype=str, index=transport_servs.index))
 
     df_target_servs = df_target_servs.append(transport_servs, ignore_index=True)
@@ -325,11 +325,11 @@ def compute_atomic_provision(social_group: str, living_situation: str, service: 
     # car_geometry = avaliability.get_car(*coords, personal_transport_time_cost)
     
     car_servs = services_buildings[
-            services_buildings['service_id'].isin(calculate_services_cnt.count_service(coords, service, personal_transport_time_cost, 'car', provision_conn, houses_conn))
+            services_buildings['service_type_id'].isin(calculate_services_cnt.count_service(coords, service, personal_transport_time_cost, 'car', provision_conn, houses_conn))
             &
             (services_buildings['service_type'] == service)
     ]
-    car_servs = car_servs.set_index('service_id').drop(df_target_servs['service_id'], errors='ignore').reset_index()
+    car_servs = car_servs.set_index('service_type_id').drop(df_target_servs['service_type_id'], errors='ignore').reset_index()
     car_servs = car_servs.join(pd.Series(['personal_transport'] * car_servs.shape[0], name='availability_type', dtype=str, index=car_servs.index))
     df_target_servs = df_target_servs.append(car_servs, ignore_index=True)
     del car_servs
@@ -397,10 +397,10 @@ def get_aggregation(where: Union[str, Tuple[float, float]], where_type: str, soc
     with provision_conn.cursor() as cur_provision:
         if where_type in ('districts', 'municipalities'):
             cur_provision.execute(f'SELECT id, avg_intensity, avg_significance, avg_provision, time_done FROM aggregation_{where_column}'
-                    ' WHERE social_group_id ' + ('= (SELECT id from social_groups where name = %s)' if social_group is not None else 'is %s') +
-                    ' AND living_situation_id ' + ('= (SELECT id from living_situations where name = %s)' if living_situation is not None else 'is %s') +
-                    ' AND service_type_id ' + ('= (SELECT id from service_types where name = %s)' if service is not None else 'is %s') +
-                    f' AND {where_column}_id = (SELECT id from {where_type} where full_name = %s)',
+                    ' WHERE social_group_id ' + ('= (SELECT id FROM social_groups WHERE name = %s)' if social_group is not None else 'is %s') +
+                    ' AND living_situation_id ' + ('= (SELECT id FROM living_situations WHERE name = %s)' if living_situation is not None else 'is %s') +
+                    ' AND service_type_id ' + ('= (SELECT id FROM service_types WHERE name = %s)' if service is not None else 'is %s') +
+                    f' AND {where_column}_id = (SELECT id FROM {where_type} WHERE full_name = %s)',
                     (social_group, living_situation, service, where))
             cur_data = cur_provision.fetchall()
             if len(cur_data) != 0:
@@ -416,9 +416,9 @@ def get_aggregation(where: Union[str, Tuple[float, float]], where_type: str, soc
                     found_id = id
         elif where_type == 'house':
             cur_provision.execute('SELECT id, avg_intensity, avg_significance, avg_provision, time_done FROM aggregation_house'
-                    ' WHERE social_group_id ' + ('= (SELECT id from social_groups where name = %s)' if social_group is not None else 'is %s') +
-                    ' AND living_situation_id ' + ('= (SELECT id from living_situations where name = %s)' if living_situation is not None else 'is %s') +
-                    ' AND service_type_id ' + ('= (SELECT id from service_types where name = %s)' if service is not None else 'is %s') +
+                    ' WHERE social_group_id ' + ('= (SELECT id FROM social_groups WHERE name = %s)' if social_group is not None else 'is %s') +
+                    ' AND living_situation_id ' + ('= (SELECT id FROM living_situations WHERE name = %s)' if living_situation is not None else 'is %s') +
+                    ' AND service_type_id ' + ('= (SELECT id FROM service_types WHERE name = %s)' if service is not None else 'is %s') +
                     ' AND latitude = %s AND longitude = %s',
                     (social_group, living_situation, service, *where))
             cur_data = cur_provision.fetchall()
@@ -515,8 +515,8 @@ def get_aggregation(where: Union[str, Tuple[float, float]], where_type: str, soc
 
         with houses_conn.cursor() as cur_houses:
             cur_houses.execute('SELECT sum(ss.number) FROM social_structure ss'
-                    ' INNER JOIN social_groups sg on ss.social_group_id = sg.id'
-                    ' WHERE house_id in (SELECT residential_object_id from houses WHERE ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float = %s'
+                    ' INNER JOIN social_groups sg ON ss.social_group_id = sg.id'
+                    ' WHERE house_id IN (SELECT residential_object_id FROM houses WHERE ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float = %s'
                     ' AND ROUND(ST_Y(ST_Centroid(geometry))::numeric, 3)::float = %s)', (house[0], house[1]))
             res = cur_houses.fetchall()
             if len(soc_groups) != 1:
@@ -527,9 +527,9 @@ def get_aggregation(where: Union[str, Tuple[float, float]], where_type: str, soc
                     significance_group = 0
                     for social_group in groups_provision.keys():
                         cur_houses.execute('SELECT ss.number FROM social_structure ss'
-                                ' INNER JOIN social_groups sg on ss.social_group_id = sg.id'
-                                ' WHERE house_id in (SELECT residential_object_id FROM houses WHERE ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float = %s'
-                                ' AND ROUND(ST_Y(ST_Centroid(geometry))::numeric, 3)::float = %s) AND sg.name = %s union select 0', (house[0], house[1], social_group))
+                                ' INNER JOIN social_groups sg ON ss.social_group_id = sg.id'
+                                ' WHERE house_id IN (SELECT residential_object_id FROM houses WHERE ROUND(ST_X(ST_Centroid(geometry))::numeric, 3)::float = %s'
+                                ' AND ROUND(ST_Y(ST_Centroid(geometry))::numeric, 3)::float = %s) AND sg.name = %s UNION select 0', (house[0], house[1], social_group))
                         number = cur_houses.fetchall()[0][0]
                         provision_group += groups_provision[social_group][0] * number / cnt_functions
                         intensity_group += groups_provision[social_group][1] * number / cnt_functions
@@ -563,8 +563,8 @@ def get_aggregation(where: Union[str, Tuple[float, float]], where_type: str, soc
             if where_type in ('districts', 'municipalities'):
                 if found_id is None:
                     cur_provision.execute(f'INSERT INTO aggregation_{where_column} (social_group_id, living_situation_id, service_type_id, {where_column}_id, avg_intensity, avg_significance, avg_provision, time_done)'
-                            ' VALUES ((SELECT id from social_groups where name = %s), (SELECT id from living_situations where name = %s), (SELECT id from service_types where name = %s),'
-                            f' (SELECT id from {where_type} where full_name = %s), %s, %s, %s, %s)',
+                            ' VALUES ((SELECT id FROM social_groups WHERE name = %s), (SELECT id FROM living_situations WHERE name = %s), (SELECT id FROM service_types WHERE name = %s),'
+                            f' (SELECT id FROM {where_type} WHERE full_name = %s), %s, %s, %s, %s)',
                             (*given_vaules, where, intensity_houses, significance_houses, provision_houses, done_time))
                 else:
                     cur_provision.execute(f'UPDATE aggregation_{where_column} SET avg_intensity = %s, avg_significance = %s, avg_provision = %s, time_done = %s WHERE id = %s',
@@ -572,7 +572,7 @@ def get_aggregation(where: Union[str, Tuple[float, float]], where_type: str, soc
             else:
                 if found_id is None:
                     cur_provision.execute('INSERT INTO aggregation_house (social_group_id, living_situation_id, service_type_id, latitude, longitude, avg_intensity, avg_significance, avg_provision, time_done)'
-                            'VALUES ((SELECT id from social_groups where name = %s), (SELECT id from living_situations where name = %s), (SELECT id from service_types where name = %s),'
+                            'VALUES ((SELECT id FROM social_groups WHERE name = %s), (SELECT id FROM living_situations WHERE name = %s), (SELECT id FROM service_types WHERE name = %s),'
                             ' %s, %s, %s, %s, %s, %s)',
                             (*given_vaules, *where, intensity_houses, significance_houses, provision_houses, done_time))
                 else:
@@ -662,9 +662,9 @@ def update_global_data() -> None:
                 '   JOIN municipalities muni on muni.id = h.municipality_id')
         all_houses = pd.DataFrame(cur.fetchall(), columns=('district', 'municipality', 'latitude', 'longitude'))
 
-        cur.execute('SELECT i.id, i.name, f.id, f.name, s.id, s.name from city_functions f JOIN infrastructure_types i ON i.id = f.infrastructure_type_id'
+        cur.execute('SELECT i.id, i.name, f.id, f.name, s.id, s.name FROM city_functions f JOIN infrastructure_types i ON i.id = f.infrastructure_type_id'
                 ' JOIN service_types s ON s.city_function_id = f.id ORDER BY i.name, f.name, s.name;')
-        infrastructure = pd.DataFrame(cur.fetchall(), columns=('infrastructure_id', 'infrastructure', 'function_id', 'function', 'service_id', 'service'))
+        infrastructure = pd.DataFrame(cur.fetchall(), columns=('infrastructure_id', 'infrastructure', 'function_id', 'function', 'service_type_id', 'service'))
 
         cur.execute('SELECT s.name, l.name, f.name, n.walking, n.public_transport, n.personal_transport, n.intensity FROM needs n'
                 ' JOIN social_groups s ON s.id = n.social_group_id'
@@ -685,7 +685,7 @@ def update_global_data() -> None:
                 ' JOIN functional_objects f ON f.id = pf.fun_obj_id'
                 ' JOIN service_types st on f.service_type_id = st.id'
                 ' ORDER BY p.id')
-        services_buildings = pd.DataFrame(cur.fetchall(), columns=('service_id', 'address', 'service_name', 'location', 'power', 'service_type'))
+        services_buildings = pd.DataFrame(cur.fetchall(), columns=('service_type_id', 'address', 'service_name', 'location', 'power', 'service_type'))
         services_buildings['location'] = pd.Series(
             map(lambda geojson: (round(float(geojson[geojson.find('[') + 1:geojson.rfind(',')]), 4), round(float(geojson[geojson.rfind(',') + 1:-2]), 4)),
                 services_buildings['location'])
@@ -700,21 +700,21 @@ def update_global_data() -> None:
         blocks = pd.DataFrame(cur.fetchall(), columns=('id', 'population', 'municipality', 'district')).set_index('id')
         blocks['population'] = blocks['population'].replace({np.nan: None})
 
-        cur.execute('SELECT loc.full_name, s.name, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum'
-                ' FROM functional_objects_districts eval'
+        cur.execute('SELECT loc.full_name, s.name, count, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum'
+                ' FROM provision.services_districts eval'
                 '   JOIN districts loc on eval.district_id = loc.id'
-                '   JOIN service_types s on eval.service_id = s.id'
+                '   JOIN service_types s on eval.service_type_id = s.id'
                 ' ORDER BY 1, 2'
         )
-        provision_districts = pd.DataFrame(cur.fetchall(), columns=('district', 'service', 'provision', 'reserve_mean', 'reserve_sum'))
+        provision_districts = pd.DataFrame(cur.fetchall(), columns=('district', 'service', 'count', 'provision', 'reserve_mean', 'reserve_sum'))
 
-        cur.execute('SELECT loc.full_name, s.name, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum'
-                ' FROM functional_objects_municipalities eval'
+        cur.execute('SELECT loc.full_name, s.name, count, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum'
+                ' FROM provision.services_municipalities eval'
                 '   JOIN municipalities loc on eval.municipality_id = loc.id'
-                '   JOIN service_types s on eval.service_id = s.id'
+                '   JOIN service_types s on eval.service_type_id = s.id'
                 ' ORDER BY 1, 2'
         )
-        provision_municipalities = pd.DataFrame(cur.fetchall(), columns=('municipality', 'service', 'provision', 'reserve_mean', 'reserve_sum'))
+        provision_municipalities = pd.DataFrame(cur.fetchall(), columns=('municipality', 'service', 'count', 'provision', 'reserve_mean', 'reserve_sum'))
 
         cur.execute('SELECT id, name FROM city_functions ORDER BY name')
         city_functions = pd.DataFrame(cur.fetchall(), columns=('id', 'name'))
@@ -751,7 +751,6 @@ def reload_data() -> Response:
 # одной городской функцией, относительно одного жилого дома.
 
 # Для сервисов передаются следующие атрибуты:
-# -  идентификатор (service_id)
 # -  название сервиса(service_name)
 # -  признак принадлежности изохрону пешеходной доступности (walking_dist, boolean)
 # -  признак принадлежности изохронам транспортной доступности (transport_dist, boolean)
@@ -774,8 +773,8 @@ def atomic_provision() -> Response:
                 if int(living_situation) in listings.living_situations['id'] else 'None'
     service: str = request.args['service'] # type: ignore
     if service.isnumeric():
-        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
-                if int(service) in infrastructure['service_id'] else 'None'
+        service = infrastructure[infrastructure['service_type_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_type_id'] else 'None'
     if not (social_group in get_social_groups(to_list=True) and living_situation in get_living_situations(to_list=True) \
                 and service in get_services(to_list=True)):
         return make_response(jsonify({'error': f"At least one of the ('social_group', 'living_situation', 'service') is not in the list of avaliable"
@@ -801,8 +800,8 @@ def aggregated_provision() -> Response:
                 if int(living_situation) in listings.living_situations['id'] else 'None'
     service: Optional[str] = request.args.get('service')
     if service and service.isnumeric():
-        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
-                if int(service) in infrastructure['service_id'] else 'None'
+        service = infrastructure[infrastructure['service_type_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_type_id'] else 'None'
     location: Optional[str] = request.args.get('location')
     if not ((social_group is None or social_group == 'all' or social_group in get_social_groups(to_list=True))
             and (living_situation is None or living_situation == 'all' or living_situation in get_living_situations(to_list=True))
@@ -845,10 +844,10 @@ def aggregated_provision() -> Response:
             for now_soc_group in soc_groups:
                 for now_situation in situations:
                     cur.execute(f'SELECT DISTINCT f.name FROM aggregation_{where_column} a' + 
-                            (f' LEFT JOIN {where_type} w ON w.id = a.{where_column}_id' if where_type != 'house' else '') +
-                            ' LEFT JOIN social_groups s ON s.id = a.social_group_id'
-                            ' LEFT JOIN living_situations l ON l.id = a.living_situation_id'
-                            ' LEFT JOIN city_functions f ON f.id = a.city_function_id' +
+                            (f' JOIN {where_type} w ON w.id = a.{where_column}_id' if where_type != 'house' else '') +
+                            ' JOIN social_groups s ON s.id = a.social_group_id'
+                            ' JOIN living_situations l ON l.id = a.living_situation_id'
+                            ' JOIN city_functions f ON f.id = a.city_function_id' +
                             (' WHERE w.full_name = %s' if where_type != 'house' else ' WHERE a.latitude = %s AND a.longitude = %s') +
                             ' AND s.name = %s AND l.name = %s',
                             (now_where, now_soc_group, now_situation) if where_type != 'house' else (now_where[0], now_where[1], now_soc_group, now_situation))
@@ -894,8 +893,8 @@ def alternative_aggregated_provision():
                 if int(living_situation) in listings.living_situations['id'] else 'None'
     service: Optional[str] = request.args.get('service')
     if service and service.isnumeric():
-        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
-                if int(service) in infrastructure['service_id'] else 'None'
+        service = infrastructure[infrastructure['service_type_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_type_id'] else 'None'
     location: Optional[str] = request.args.get('location')
     if not ((social_group is None or social_group == 'all' or social_group in get_social_groups(to_list=True))
             and (living_situation is None or living_situation == 'all' or living_situation in get_living_situations(to_list=True))
@@ -1118,8 +1117,8 @@ def houses_in_square() -> Response:
 
 def get_social_groups(service: Optional[str] = None, living_situation: Optional[str] = None, to_list: bool = False) -> Union[List[str], pd.DataFrame]:
     if service and service.isnumeric():
-        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
-                if int(service) in infrastructure['service_id'] else 'None'
+        service = infrastructure[infrastructure['service_type_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_type_id'] else 'None'
     if living_situation and living_situation.isnumeric():
         living_situation = listings.living_situations[listings.living_situations['id'] == int(living_situation)]['name'].iloc[0] \
                 if int(living_situation) in listings.living_situations['id'] else 'None'
@@ -1253,8 +1252,8 @@ def get_services(social_group: Optional[str] = None, living_situation: Optional[
 @app.route('/api/list/services/', methods=['GET'])
 def list_services() -> Response:
     res: List[str] = sorted(get_services(request.args.get('social_group'), request.args.get('living_situation'), to_list=True))
-    ids = list(infrastructure[infrastructure['service'].isin(res)][['service_id', 'service']].drop_duplicates() \
-            .sort_values('service')['service_id'])
+    ids = list(infrastructure[infrastructure['service'].isin(res)][['service_type_id', 'service']].drop_duplicates() \
+            .sort_values('service')['service_type_id'])
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
@@ -1272,8 +1271,8 @@ def get_living_situations(social_group: Optional[str] = None, service: Optional[
         social_group = listings.social_groups[listings.social_groups['id'] == int(social_group)]['name'].iloc[0] \
                 if int(social_group) in listings.social_groups['id'] else 'None'
     if service and service.isnumeric():
-        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
-                if int(service) in infrastructure['service_id'] else 'None'
+        service = infrastructure[infrastructure['service_type_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_type_id'] else 'None'
     res = needs[(needs['significance'] > 0) & (needs['intensity'] > 0)]
     if social_group is not None and service is not None:
         res = res[(res['social_group'] == social_group) & (res['service'] == service)].drop(['service', 'social_group'], axis=True)
@@ -1410,7 +1409,7 @@ def list_city_hierarchy() -> Response:
 @app.route('/api/', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2021-06-21',
+        'version': '2021-07-01',
         '_links': {
             'self': {
                 'href': request.path
@@ -1499,8 +1498,12 @@ def api_help() -> Response:
                 'href': '/api/provision_v3/houses{?service,location}',
                 'templated': True
             },
+            'provision_v3_house_service_types' : {
+                'href': '/api/provision_v3/house/{house_id}/{?service}',
+                'templated': True
+            },
             'provision_v3_house_services': {
-                'href': '/api/provision_v3/house_services/{house_id}/{?service,radius}',
+                'href': '/api/provision_v3/house_services/{house_id}/{?service}',
                 'templated': True
             },
             'provision_v3_prosperity': {
@@ -1523,22 +1526,22 @@ def api_help() -> Response:
 def provision_v3_services() -> Response:
     service = request.args.get('service')
     if service and service.isnumeric():
-        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
-                if int(service) in infrastructure['service_id'] else f'{service} (not found)'
+        service = infrastructure[infrastructure['service_type_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_type_id'] else f'{service} (not found)'
     location = request.args.get('location')
     with properties.houses_conn.cursor() as cur:
         cur.execute('SELECT ST_AsGeoJSON(s.center), s.service_type, s.service_name, s.district_name, s.municipal_name, s.block_id, s.address,'
                 '    v.houses_in_radius, v.people_in_radius, v.service_load, v.needed_capacity, v.reserve_resource, v.evaluation as provision,'
-                '    v.functional_object_id as service_id'
-                ' FROM all_services s JOIN functional_objects_values v ON s.func_id = v.functional_object_id' + 
+                '    v.functional_object_id as service_type_id'
+                ' FROM all_services s JOIN provision.services v ON s.func_id = v.functional_object_id' + 
                 (' WHERE s.service_type = %s' if 'service' in request.args else ''), ((service,) if 'service' in request.args else ()))
         df = pd.DataFrame(cur.fetchall(), columns=('center', 'service_type', 'service_name', 'district', 'municipality', 'block', 'address',
                 'houses_in_access', 'people_in_access', 'service_load', 'needed_capacity', 'reserve_resource', 'provision', 'service_id'))
         if 'service' in request.args:
-            cur.execute('SELECT normative, max_load, radius_meters, public_transport_time FROM service_types_properties WHERE service_type_id = ' +
+            cur.execute('SELECT normative, max_load, radius_meters, public_transport_time FROM provision.normatives WHERE service_type_id = ' +
                     ('%s' if request.args['service'].isnumeric() else '(SELECT id FROM service_types WHERE name = %s)'), (request.args['service'],))
         else:
-            cur.execute('SELECT st.name, p.normative, p.max_load, p.radius_meters, p.public_transport_time FROM service_types_properties p'
+            cur.execute('SELECT st.name, p.normative, p.max_load, p.radius_meters, p.public_transport_time FROM provision.normatives p'
                     ' JOIN service_types st on p.service_type_id = st.id')
         df_servs = pd.DataFrame(cur.fetchall(),
                 columns=('service_type', 'normative', 'max_load', 'radius_meters', 'public_transport_time')[(1 if 'service' in request.args else 0):])
@@ -1585,7 +1588,7 @@ def provision_v3_service_info(service_id: int) -> Response:
     with properties.houses_conn.cursor() as cur:
         cur.execute('SELECT ST_AsGeoJSON(s.center), s.service_type, s.service_name, s.district_name, s.municipal_name, s.block_id, s.address,'
                 '    v.houses_in_radius, v.people_in_radius, v.service_load, v.needed_capacity, v.reserve_resource, v.evaluation as provision'
-                ' FROM all_services s JOIN functional_objects_values v ON s.func_id = %s AND v.functional_object_id = %s', (service_id, service_id))
+                ' FROM all_services s JOIN provision.services v ON s.func_id = %s AND v.functional_object_id = %s', (service_id, service_id))
         res = cur.fetchone()
         if res is None:
             service_info['service_name'] = 'Not found'
@@ -1618,7 +1621,7 @@ def provision_v3_service_info(service_id: int) -> Response:
 def provision_v3_houses() -> Response:
     service = request.args.get('service')
     if service and not service.isnumeric():
-        service = int(infrastructure[infrastructure['service'] == service]['service_id'].iloc[0]) \
+        service = int(infrastructure[infrastructure['service'] == service]['service_type_id'].iloc[0]) \
                 if service in list(infrastructure['service']) else None
     elif service:
         service = int(service)
@@ -1649,7 +1652,7 @@ def provision_v3_houses() -> Response:
         }), 400)
     with properties.houses_conn.cursor() as cur:
         cur.execute('SELECT h.residential_object_id, h.address, ST_AsGeoJSON(h.center), d.full_name AS district, m.full_name AS municipality,'
-                ' h.block_id, s.name as service, p.reserve_resource, p.provision FROM houses_provision p JOIN houses h ON p.house_id = h.id'
+                ' h.block_id, s.name as service, p.reserve_resource, p.provision FROM provision.houses p JOIN houses h ON p.house_id = h.id'
                 ' JOIN districts d ON h.district_id = d.id JOIN municipalities m ON h.municipality_id = m.id'
                 ' JOIN service_types s ON p.service_type_id = s.id' + 
                 (' WHERE' if location_tuple or service else '') +
@@ -1673,13 +1676,14 @@ def provision_v3_houses() -> Response:
             'center': center,
             'district': district,
             'municipality': municipality,
-            'block': int(block),
+            'block': int(block) if block == block else None,
             'services': services
         })
     return make_response(jsonify({
         '_links': {
             'self': {'href': request.path},
-            'services': {'href': '/api/provision_v3/house_services/{house_id}/{?service,radius}', 'templated': True}
+            'services': {'href': '/api/provision_v3/house_services/{house_id}/{?service}', 'templated': True},
+            'house_info': {'href': '/api/provision_v3/house/{house_id}/{?service}', 'templated': True}
         },
         '_embedded': {
             'parameters': {
@@ -1690,37 +1694,66 @@ def provision_v3_houses() -> Response:
         }
     }))
 
+@app.route('/api/provision_v3/house/<int:house_id>', methods=['GET'])
+@app.route('/api/provision_v3/house/<int:house_id>/', methods=['GET'])
+def provision_v3_house(house_id: int) -> Response:
+    house_info: Dict[str, Any] = dict()
+    with properties.houses_conn.cursor() as cur:
+        cur.execute('SELECT h.address, ST_AsGeoJSON(h.center), d.full_name AS district, m.full_name AS municipality,'
+                ' h.block_id, s.name as service, p.reserve_resource, p.provision FROM provision.houses p JOIN houses h ON p.house_id = h.id'
+                ' JOIN districts d ON h.district_id = d.id JOIN municipalities m ON h.municipality_id = m.id'
+                ' JOIN service_types s ON p.service_type_id = s.id' + 
+                ' WHERE h.residential_object_id = %s' + 
+                (' AND s.name = %s' if 'service' in request.args and not request.args['service'].isnumeric() else \
+                        ' AND s.id = %s' if 'service' in request.args else ''),
+                (house_id, request.args['service']) if 'service' in request.args else (house_id,))
+        house_service_types = pd.DataFrame(cur.fetchall(),
+                columns=('address', 'center', 'district', 'municipality', 'block', 'service', 'reserve_resource', 'provision'))
+        if house_service_types.shape[0] == 0:
+            house_info['address'] = 'Not found'
+        else:
+            tmp = house_service_types[['address', 'center', 'district', 'municipality', 'block']].iloc[0]
+            house_info['address'], house_info['center'], house_info['district'], house_info['municipality'], house_info['block'] = \
+                    tmp.iloc[0] if isinstance(tmp, pd.DataFrame) else tmp
+            house_info['center'] = json.loads(house_info['center'])
+            house_info['block'] = int(house_info['block']) if house_info['block'] == house_info['block'] else None
+            house_info['services'] = [{'service': service, 'reserve_resources': reserve, 'provision': provision} \
+                    for _, (service, reserve, provision) in house_service_types[['service', 'reserve_resource', 'provision']].iterrows()]
+    return make_response(jsonify({
+        '_links': {'self': {'href': request.path}},
+        '_embedded': {
+            'house': house_info,
+            'parameters': {
+                'house_id': house_id,
+                'service': request.args.get('service')
+            }
+        }
+    }), 404 if house_info['address'] == 'Not found' else 200)
+
 
 @app.route('/api/provision_v3/house_services/<int:house_id>', methods=['GET'])
 @app.route('/api/provision_v3/house_services/<int:house_id>/', methods=['GET'])
 def house_services(house_id: int) -> Response:
-    default_radius = 500
-    if 'radius' in request.args and request.args['radius'].isnumeric():
-        radius = int(request.args['radius'])
     service = request.args.get('service')
     if service and service.isnumeric():
-        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
-                if int(service) in list(infrastructure['service_id']) else None
+        service = infrastructure[infrastructure['service_type_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in list(infrastructure['service_type_id']) else None
     with properties.houses_conn.cursor() as cur:
-        if 'radius' not in request.args and service:
-            cur.execute('SELECT radius_meters FROM service_types_properties WHERE service_type_id = ' +
-                    ('(SELECT id FROM service_types WHERE name = %s)' if service else ''), (service,))
-            res = cur.fetchone()
-            if res is None or res[0] is None:
-                radius = default_radius
-            else:
-                radius = res[0]
-        elif 'radius' not in request.args:
-            radius = default_radius
-        cur.execute('SELECT func_id, service_name, ST_AsGeoJSON(center) FROM all_services'
-                ' WHERE ST_Within(center, ST_Buffer((SELECT center FROM houses WHERE residential_object_id = %s)::geography, %s)::geometry)' +
-                (' AND service_type = %s' if 'service' in request.args else ''), ((house_id, radius, service) if 'service' in request.args else (house_id, radius,)))
-        services = [{'id': func_id, 'name': name, 'center': json.loads(center)} for func_id, name, center in cur.fetchall()]
+        if 'service' in request.args:
+            cur.execute('SELECT a.func_id, a.service_name, ST_AsGeoJSON(a.center), hs.load FROM provision.houses_services hs JOIN all_services a'
+                    ' ON hs.functional_object_id = a.func_id WHERE hs.house_id = %s'
+                    ' AND a.service_type = %s', (house_id, service))
+            services = [{'id': func_id, 'name': name, 'center': json.loads(center), 'load': load} for func_id, name, center, load in cur.fetchall()]
+        else:
+            cur.execute('SELECT a.func_id, a.service_name, ST_AsGeoJSON(a.center), a.service_type, hs.load FROM provision.houses_services hs JOIN all_services a'
+                    ' ON hs.functional_object_id = a.func_id WHERE hs.house_id = %s',
+                    (house_id,))
+            services = [{'id': func_id, 'name': name, 'center': json.loads(center), 'service_type': service_type, 'load': load} for
+                    func_id, name, center, service_type, load in cur.fetchall()]
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
             'parameters': {
-                'radius': radius,
                 'house_id': house_id,
                 'service': service
             },
@@ -1734,7 +1767,7 @@ def house_services(house_id: int) -> Response:
 def provision_v3_ready() -> Response:
     with properties.houses_conn.cursor() as cur:
         cur.execute('SELECT s.service_type, count(*) FROM all_services s'
-                ' JOIN functional_objects_values v ON s.func_id = v.functional_object_id GROUP BY s.service_type')
+                ' JOIN provision.services v ON s.func_id = v.functional_object_id GROUP BY s.service_type')
         df = pd.DataFrame(cur.fetchall(), columns=('service', 'count'))
         return make_response(jsonify({
             '_links': {'self': {'href': request.path}},
@@ -1761,8 +1794,8 @@ def provision_v3_prosperity() -> Response:
                 if int(social_group) in listings.social_groups['id'] else 'None'
     service = request.args.get('service')
     if service and service.isnumeric():
-        parameters['service'] = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
-                if int(service) in infrastructure['service_id'] else 'None'
+        parameters['service'] = infrastructure[infrastructure['service_type_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in infrastructure['service_type_id'] else 'None'
     del social_group, service
 
     provision: Optional[float] = None
@@ -1834,8 +1867,8 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
                 if int(social_group) in listings.social_groups['id'] else 'None'
     service: Optional[str] = request.args.get('service')
     if service and service.isnumeric():
-        service = infrastructure[infrastructure['service_id'] == int(service)]['service'].iloc[0] \
-                if int(service) in list(infrastructure['service_id']) else 'None'
+        service = infrastructure[infrastructure['service_type_id'] == int(service)]['service'].iloc[0] \
+                if int(service) in list(infrastructure['service_type_id']) else 'None'
     city_function: Optional[str] = request.args.get('city_function')
     if city_function and city_function.isnumeric():
         city_function = infrastructure[infrastructure['function'] == int(city_function)]['function'].iloc[0] \
@@ -1844,7 +1877,7 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
     if infra and infra.isnumeric():
         infra = infrastructure[infrastructure['infrastructure'] == int(infra)]['infrastructure'].iloc[0] \
                 if int(infra) in list(infrastructure['infrastructure'].unique()) else 'None'
-    if 'provision_only' in request.args and request.args['provision_only'] not in ('0', 'false', '-'):
+    if 'provision_only' in request.args and request.args['provision_only'] not in ('0', 'false', '-', 'no'):
         provision_only = True
     else:
         provision_only = False
@@ -1904,8 +1937,11 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
             n = n[n['social_group'] == social_group][[aggregation_type, 'significance']]
 
         res = res.merge(infrastructure[['service', 'function', 'infrastructure']], how='inner', on='service') \
-                [['district' if location_type == 'districts' else 'municipality', aggregation_type, 'provision']]
+                [['district' if location_type == 'districts' else 'municipality', aggregation_type, 'count', 'reserve_mean', 'reserve_sum', 'provision']]
         res = res.merge(n, how='inner', on=aggregation_type)
+    else:
+        res = res.merge(infrastructure[['service', 'function', 'infrastructure']], how='inner', on='service') \
+                [['district' if location_type == 'districts' else 'municipality', aggregation_type, 'count', 'reserve_mean', 'reserve_sum', 'provision']]
 
     if aggregation_value not in ('all', 'mean'):
         res = res[res[aggregation_type] == aggregation_value]
@@ -1917,22 +1953,45 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
         aggregation_labels.append('social_group')
     if district == 'mean' or municipality == 'mean':
         aggregation_labels.append('district' if location_type == 'districts' else 'municipality')
+
+    if res[['district' if location_type == 'districts' else 'municipality', aggregation_type]].drop_duplicates().shape[0] != res.shape[0]:
+        res['reserve_mean'] *= res['count']
+        res['provision'] *= res['count']
+        if not provision_only:
+            res['significance'] *= res['count']
+            gr = res.groupby(['district' if location_type == 'districts' else 'municipality', aggregation_type, 'social_group'])
+        else:
+            gr = res.groupby(['district' if location_type == 'districts' else 'municipality', aggregation_type])
+        res = gr.sum()[['count', 'reserve_sum', 'reserve_mean', 'provision']]
+        if not provision_only:
+            res = res.join(gr.sum()['significance'])
+        res = res.reset_index()
+        res['reserve_mean'] /= res['count']
+        res['provision'] /= res['count']
+        if not provision_only:
+            res['significance'] /= res['count']
+
     if len(aggregation_labels) != 0:
         res = res.drop(aggregation_labels, axis=True)
-        aggr = set(res.columns) - {'provision', 'significance'} - set(aggregation_labels)
-        if provision_only:
-            aggr -= {'reserve_mean', 'reserve_sum'}
+        aggr = set(res.columns) - {'provision', 'significance', 'count', 'reserve_mean', 'reserve_sum'} - set(aggregation_labels)
+        res['reserve_mean'] *= res['count']
+        res['provision'] *= res['count']
+        if not provision_only:
+            res['significance'] *= res['count']
         if len(aggr) == 0:
-            res = pd.DataFrame(res.mean()).transpose()
+            res = pd.DataFrame(res.sum()).transpose()
         else:
-            res = res.groupby(list(aggr)).mean().reset_index()
+            res = res.groupby(list(aggr)).sum().reset_index()
+        res['reserve_mean'] /= res['count']
+        res['provision'] /= res['count']
+        if not provision_only:
+            res['significance'] /= res['count']
 
     if not provision_only:
         res['prosperity'] = (10 + res['significance'] * (res['provision'] - 10)).apply(lambda x: round(x, 2))
         res['significance'] = res['significance'].apply(lambda x: round(x, 2))
-    else:
-        res['reserve_mean'] = res['reserve_mean'].apply(lambda x: round(x, 2))
-        res['reserve_sum'] = res['reserve_sum'].apply(lambda x: round(x, 2))
+    res['reserve_mean'] = res['reserve_mean'].apply(lambda x: round(x, 2))
+    res['reserve_sum'] = res['reserve_sum'].apply(lambda x: round(x, 2))
     res['provision'] = res['provision'].apply(lambda x: round(x, 2))
     
     parameters = {

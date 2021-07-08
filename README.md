@@ -46,13 +46,13 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -T,--transport_model_endpoint \<str\> - tranaport_model_endpoint
 * -S,--aggregate_target \<str\>- aggregation_target
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-06-21)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-07-01)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-06-21 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-07-01 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-06-21`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-06-21`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-07-01`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-07-01`  
       Ensure that:
         1. _/etc/postgresql/\<version\>/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/\<version\>/main/pg\_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
@@ -92,8 +92,11 @@ At this moment there are endpoints:
 * **/api/provision_v3/ready**: returns the list of calculated service types with the number of them.
 * **/api/provision_v3/services**: returns the list of conctere services with their provision evaluation. Takes `service` and `location` as optional parameters.
   `service` can be one of the services calculated (by name or by id), `location` is a district or municipality by full or short name.
+* **/api/provision_v3/service/{service_id}**: returns the provision evaluation of a given service. If not found, service name = "Not found" and response status is 404.
 * **/api/provision_v3/houses**: returns the list of houses with their services provision. At least one of the `service` and `location` parameters must be set.
   `location` can be municipality or district given as short or full name, `service` - service type given by id or by name.
+* **/api/provision_v3/house/{house_id}**: returns the service types provision evaluation of a given house. If house is not found, address = "Not found" and
+  response status is 404. `service` can be set by name or id to get information of ont particular service type.
 * **/api/provision_v3/house_services/{house_id}/**: returns the list of services of given service type around the given living house. Can take radius as parameter.
 * **/api/provision_v3/prosperity**: returns the prosperity value of a service type for a given social froup in a given location (district or municipality).
 * **/api/provision_v3/prosperity/municipalities**: returns the prosperity value of municipalities. Takes `social_group`, `service`/`city_function`/`infrastructure`,
@@ -193,8 +196,12 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
       "href": "/api/provision_v3/houses{?service,location}",
       "templated": true
     },
+    "provision_v3_house_service_types" : {
+      "href": "/api/provision_v3/house/{house_id}/{?service}",
+      "templated": true
+    },
     "provision_v3_house_services": {
-      "href": "/api/provision_v3/house_services/{house_id}/{?service,radius}",
+      "href": "/api/provision_v3/house_services/{house_id}/{?service}",
       "templated": true
     },
     "provision_v3_prosperity": {
