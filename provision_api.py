@@ -700,21 +700,21 @@ def update_global_data() -> None:
         blocks = pd.DataFrame(cur.fetchall(), columns=('id', 'population', 'municipality', 'district')).set_index('id')
         blocks['population'] = blocks['population'].replace({np.nan: None})
 
-        cur.execute('SELECT loc.full_name, s.name, count, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum'
+        cur.execute('SELECT loc.full_name, s.name, count, eval.service_load_mean, eval.service_load_sum, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum'
                 ' FROM provision.services_districts eval'
                 '   JOIN districts loc on eval.district_id = loc.id'
                 '   JOIN service_types s on eval.service_type_id = s.id'
                 ' ORDER BY 1, 2'
         )
-        provision_districts = pd.DataFrame(cur.fetchall(), columns=('district', 'service', 'count', 'provision', 'reserve_mean', 'reserve_sum'))
+        provision_districts = pd.DataFrame(cur.fetchall(), columns=('district', 'service', 'count', 'load_mean', 'load_sum', 'provision', 'reserve_mean', 'reserve_sum'))
 
-        cur.execute('SELECT loc.full_name, s.name, count, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum'
+        cur.execute('SELECT loc.full_name, s.name, count, eval.service_load_mean, eval.service_load_sum, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum'
                 ' FROM provision.services_municipalities eval'
                 '   JOIN municipalities loc on eval.municipality_id = loc.id'
                 '   JOIN service_types s on eval.service_type_id = s.id'
                 ' ORDER BY 1, 2'
         )
-        provision_municipalities = pd.DataFrame(cur.fetchall(), columns=('municipality', 'service', 'count', 'provision', 'reserve_mean', 'reserve_sum'))
+        provision_municipalities = pd.DataFrame(cur.fetchall(), columns=('municipality', 'service', 'count', 'load_mean', 'load_sum', 'provision', 'reserve_mean', 'reserve_sum'))
 
         cur.execute('SELECT id, name FROM city_functions ORDER BY name')
         city_functions = pd.DataFrame(cur.fetchall(), columns=('id', 'name'))
@@ -1409,7 +1409,7 @@ def list_city_hierarchy() -> Response:
 @app.route('/api/', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2021-07-01',
+        'version': '2021-08-06',
         '_links': {
             'self': {
                 'href': request.path
@@ -1484,7 +1484,11 @@ def api_help() -> Response:
                 'templated': True
             },
             'provision_v3_ready': {
-                'href': '/api/provision_v3/ready/'
+                'href': '/api/provision_v3/ready/{?include_evaluation_scale}',
+                'templated': True
+            },
+            'provision_v3_not_ready': {
+                'href': '/api/provision_v3/not_ready/'
             },
             'provision_v3_services': {
                 'href': '/api/provision_v3/services/{?service,location}',
@@ -1537,16 +1541,9 @@ def provision_v3_services() -> Response:
                 (' WHERE s.service_type = %s' if 'service' in request.args else ''), ((service,) if 'service' in request.args else ()))
         df = pd.DataFrame(cur.fetchall(), columns=('center', 'service_type', 'service_name', 'district', 'municipality', 'block', 'address',
                 'houses_in_access', 'people_in_access', 'service_load', 'needed_capacity', 'reserve_resource', 'provision', 'service_id'))
-        if 'service' in request.args:
-            cur.execute('SELECT normative, max_load, radius_meters, public_transport_time FROM provision.normatives WHERE service_type_id = ' +
-                    ('%s' if request.args['service'].isnumeric() else '(SELECT id FROM service_types WHERE name = %s)'), (request.args['service'],))
-        else:
-            cur.execute('SELECT st.name, p.normative, p.max_load, p.radius_meters, p.public_transport_time FROM provision.normatives p'
-                    ' JOIN service_types st on p.service_type_id = st.id')
-        df_servs = pd.DataFrame(cur.fetchall(),
-                columns=('service_type', 'normative', 'max_load', 'radius_meters', 'public_transport_time')[(1 if 'service' in request.args else 0):])
     df['center'] = df['center'].apply(json.loads)
     df['block'] = df['block'].replace({np.nan: None})
+    df['address'] = df['address'].replace({np.nan: None})
     if location is not None:
         if location in city_hierarchy['district_full_name'].unique() or location in city_hierarchy['district_short_name'].unique():
             districts = city_hierarchy[['district_full_name', 'district_short_name']]
@@ -1572,8 +1569,7 @@ def provision_v3_services() -> Response:
             }
         },
         '_embedded': {
-            'services': list(df.replace().transpose().to_dict().values()),
-            'services_properties': list(df_servs.replace().transpose().to_dict().values()),
+            'services': list(df.transpose().to_dict().values()),
             'parameters': {
                 'service': service,
                 'location': location
@@ -1730,7 +1726,6 @@ def provision_v3_house(house_id: int) -> Response:
         }
     }), 404 if house_info['address'] == 'Not found' else 200)
 
-
 @app.route('/api/provision_v3/house_services/<int:house_id>', methods=['GET'])
 @app.route('/api/provision_v3/house_services/<int:house_id>/', methods=['GET'])
 def house_services(house_id: int) -> Response:
@@ -1761,18 +1756,43 @@ def house_services(house_id: int) -> Response:
         }
     }))
 
-
 @app.route('/api/provision_v3/ready', methods=['GET'])
 @app.route('/api/provision_v3/ready/', methods=['GET'])
 def provision_v3_ready() -> Response:
     with properties.houses_conn.cursor() as cur:
-        cur.execute('SELECT s.service_type, count(*) FROM all_services s'
-                ' JOIN provision.services v ON s.func_id = v.functional_object_id GROUP BY s.service_type')
-        df = pd.DataFrame(cur.fetchall(), columns=('service', 'count'))
+        cur.execute('SELECT c.service_type, c.count, n.normative, n.max_load, n.radius_meters, '
+                '   n.public_transport_time, n.service_evaluation, n.house_evaluation'
+                ' FROM (SELECT s.service_type, count(*) FROM all_services s'
+                '       JOIN provision.services v ON s.func_id = v.functional_object_id GROUP BY s.service_type) as c'
+                '   JOIN service_types st ON c.service_type = st.name'
+                '   LEFT JOIN provision.normatives n ON n.service_type_id = st.id')
+        df = pd.DataFrame(cur.fetchall(), columns=('service', 'count', 'normative', 'max_load', 'radius_meters',
+                'public_transport_time', 'service_evaluation', 'house_evaluation'))
+        if not 'include_evaluation_scale' in request.args:
+            df = df.drop(['service_evaluation', 'house_evaluation'], axis=True)
         return make_response(jsonify({
             '_links': {'self': {'href': request.path}},
             '_embedded': {
-                'ready': list(df.transpose().to_dict().values())
+                'ready': list(df.replace({np.nan: None}).transpose().to_dict().values())
+            }
+        }))
+
+@app.route('/api/provision_v3/not_ready', methods=['GET'])
+@app.route('/api/provision_v3/not_ready/', methods=['GET'])
+def provision_v3_not_ready() -> Response:
+    with properties.houses_conn.cursor() as cur:
+        cur.execute('SELECT st.name as service_type, s.count AS unevaluated, c.count AS total'
+                ' FROM (SELECT service_type_id, count(*)'
+                '   FROM functional_objects where id not in'
+                '       (SELECT functional_object_id from provision.services) GROUP BY service_type_id ORDER BY 1) AS s'
+                ' JOIN service_types st ON s.service_type_id = st.id'
+                ' JOIN (SELECT service_type_id, count(*) FROM functional_objects'
+                ' GROUP BY service_type_id) AS c ON c.service_type_id = st.id'
+                ' ORDER BY 1')
+        return make_response(jsonify({
+            '_links': {'self': {'href': request.path}},
+            '_embedded': {
+                'ready': [{'service': service, 'unevaluated': unevaluated, 'total_count': total} for service, unevaluated, total in cur.fetchall()]
             }
         }))
 
@@ -1860,7 +1880,13 @@ def provision_v3_prosperity() -> Response:
 @app.route('/api/provision_v3/prosperity/<location_type>', methods=['GET'])
 @app.route('/api/provision_v3/prosperity/<location_type>/', methods=['GET'])
 def provision_v3_prosperity_multiple(location_type: str) -> Response:
-    assert location_type in ('districts', 'municipalities')
+    if location_type not in ('districts', 'municipalities'):
+        return make_response(jsonify({
+            '_links': {'self': {'href': request.path}},
+            '_embedded': {
+                'error': f"location_type must be 'districts' or 'municipalities', but '{location_type}' was found"
+            }
+        }), 400)
     social_group: str = request.args.get('social_group', 'all')
     if social_group.isnumeric():
         social_group = listings.social_groups[listings.social_groups['id'] == int(social_group)]['name'].iloc[0] \
@@ -1937,11 +1963,11 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
             n = n[n['social_group'] == social_group][[aggregation_type, 'significance']]
 
         res = res.merge(infrastructure[['service', 'function', 'infrastructure']], how='inner', on='service') \
-                [['district' if location_type == 'districts' else 'municipality', aggregation_type, 'count', 'reserve_mean', 'reserve_sum', 'provision']]
+                [['district' if location_type == 'districts' else 'municipality', aggregation_type, 'count', 'load_mean', 'load_sum', 'reserve_mean', 'reserve_sum', 'provision']]
         res = res.merge(n, how='inner', on=aggregation_type)
     else:
         res = res.merge(infrastructure[['service', 'function', 'infrastructure']], how='inner', on='service') \
-                [['district' if location_type == 'districts' else 'municipality', aggregation_type, 'count', 'reserve_mean', 'reserve_sum', 'provision']]
+                [['district' if location_type == 'districts' else 'municipality', aggregation_type, 'count', 'load_mean', 'load_sum', 'reserve_mean', 'reserve_sum', 'provision']]
 
     if aggregation_value not in ('all', 'mean'):
         res = res[res[aggregation_type] == aggregation_value]
@@ -1955,6 +1981,7 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
         aggregation_labels.append('district' if location_type == 'districts' else 'municipality')
 
     if res[['district' if location_type == 'districts' else 'municipality', aggregation_type]].drop_duplicates().shape[0] != res.shape[0]:
+        res['load_mean'] *= res['count']
         res['reserve_mean'] *= res['count']
         res['provision'] *= res['count']
         if not provision_only:
@@ -1962,10 +1989,11 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
             gr = res.groupby(['district' if location_type == 'districts' else 'municipality', aggregation_type, 'social_group'])
         else:
             gr = res.groupby(['district' if location_type == 'districts' else 'municipality', aggregation_type])
-        res = gr.sum()[['count', 'reserve_sum', 'reserve_mean', 'provision']]
+        res = gr.sum()[['count', 'load_mean', 'load_sum', 'reserve_mean', 'reserve_sum', 'provision']]
         if not provision_only:
             res = res.join(gr.sum()['significance'])
         res = res.reset_index()
+        res['load_mean'] /= res['count']
         res['reserve_mean'] /= res['count']
         res['provision'] /= res['count']
         if not provision_only:
@@ -1973,7 +2001,8 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
 
     if len(aggregation_labels) != 0:
         res = res.drop(aggregation_labels, axis=True)
-        aggr = set(res.columns) - {'provision', 'significance', 'count', 'reserve_mean', 'reserve_sum'} - set(aggregation_labels)
+        aggr = set(res.columns) - {'provision', 'significance', 'count', 'load_mean', 'load_sum', 'reserve_mean', 'reserve_sum'} - set(aggregation_labels)
+        res['load_mean'] *= res['count']
         res['reserve_mean'] *= res['count']
         res['provision'] *= res['count']
         if not provision_only:
@@ -1982,6 +2011,7 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
             res = pd.DataFrame(res.sum()).transpose()
         else:
             res = res.groupby(list(aggr)).sum().reset_index()
+        res['load_mean'] /= res['count']
         res['reserve_mean'] /= res['count']
         res['provision'] /= res['count']
         if not provision_only:
@@ -1990,6 +2020,7 @@ def provision_v3_prosperity_multiple(location_type: str) -> Response:
     if not provision_only:
         res['prosperity'] = (10 + res['significance'] * (res['provision'] - 10)).apply(lambda x: round(x, 2))
         res['significance'] = res['significance'].apply(lambda x: round(x, 2))
+    res['load_mean'] = res['load_mean'].apply(lambda x: round(x, 2))
     res['reserve_mean'] = res['reserve_mean'].apply(lambda x: round(x, 2))
     res['reserve_sum'] = res['reserve_sum'].apply(lambda x: round(x, 2))
     res['provision'] = res['provision'].apply(lambda x: round(x, 2))
@@ -2096,7 +2127,7 @@ if __name__ == '__main__':
                         help=f'postgres user name [default: {properties.houses_db_user}]', type=str)
     parser.add_argument('-hW', '--houses_db_pass', action='store', dest='houses_db_pass',
                         help=f'database user password [default: {properties.houses_db_pass}]', type=str)
-    parser.add_argument('-hp', '--port', action='store', dest='api_port',
+    parser.add_argument('-p', '--port', action='store', dest='api_port',
                         help=f'postgres port number [default: {properties.api_port}]', type=int)
     parser.add_argument('-t', '--aggregate_target', action='store', dest='aggregate_target',
                         help=f'aggregate municipality, district with municipalities or everything [default: {aggregate_target}', type=str)
