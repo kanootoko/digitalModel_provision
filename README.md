@@ -41,13 +41,13 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -hU,--db_user \<str\> - db_user
 * -hW,--db_pass \<str\> - db_pass
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-10-05)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-10-13)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-10-05 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-10-13 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-10-05`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-10-05`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-10-13`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-10-13`  
       Ensure that:
         1. _/etc/postgresql/\<version\>/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/\<version\>/main/pg\_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
@@ -121,6 +121,9 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
     "list-districts": {
       "href": "/api/list/districts/"
     },
+    "list-municipalities": {
+      "href": "/api/list/municipalities/"
+    },
     "list-infrastructures": {
       "href": "/api/list/infrastructures/"
     },
@@ -128,11 +131,8 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
       "href": "/api/list/living_situations/{?social_group,service}",
       "templated": true
     },
-    "list-municipalities": {
-      "href": "/api/list/municipalities/"
-    },
-    "list-services": {
-      "href": "/api/list/services/{?social_group,living_situation}",
+    "list-service_types": {
+      "href": "/api/list/service_types/{?social_group,living_situation}",
       "templated": true
     },
     "list-social_groups": {
@@ -140,7 +140,11 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
       "templated": true
     },
     "provision_v3_ready": {
-      "href": "/api/provision_v3/ready/"
+      "href": "/api/provision_v3/ready/{?service_type,include_evaluation_scale}",
+      "templated": true
+    },
+    "provision_v3_not_ready": {
+      "href": "/api/provision_v3/not_ready/"
     },
     "provision_v3_services": {
       "href": "/api/provision_v3/services/{?service,location}",
@@ -178,6 +182,10 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
       "href": "/api/relevance/city_functions/{?social_group,living_situation}",
       "templated": true
     },
+    "relevant-service_types": {
+      "href": "/api/relevance/service_types/{?social_group,living_situation}",
+      "templated": true
+    },
     "relevant-living_situations": {
       "href": "/api/relevance/living_situations/{?social_group,service}",
       "templated": true
@@ -201,14 +209,22 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
 ```json
 {
   "_embedded": {
-    "params": {
-      "city_function": ":service",
-      "living_situation": ":living_situation"
-    },
     "social_groups": [
       ":social_group",
       <...>
-    ]
+    ],
+    "social_groups_ids": [
+      ":social_group_id",
+      <...>
+    ],
+    "social_groups_codes": [
+      ":social_group_code",
+      <...>
+    ],
+    "params": {
+      "city_function": ":service",
+      "living_situation": ":living_situation"
+    }
   },
   "_links": {
     "self": {
@@ -218,7 +234,9 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
 }
 ```
 
-:social_group - string, one of the social groups  
+:social_group - string, name of the social group  
+:social_group_id - int, id of the social group  
+:social_group_code - string, code of the social group  
 :service - string, one of the services; or null if not specified in request  
 :living_situation - string, one of the living situations; or null if not specified in request
 
@@ -229,6 +247,14 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
   "_embedded": {
     "city_functions": [
       ":city_function",
+      <...>
+    ],
+    "city_functions_ids": [
+      ":city_function_id",
+      <...>
+    ],
+    "city_functions_codes": [
+      ":city_function_code",
       <...>
     ],
     "params": {
@@ -244,19 +270,33 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
 }
 ```
 
-:city_function - string, one of the city functions  
+:city_function - string, name of the city function  
+:city_function_id - int, id of the city function  
+:city_function_code - string, code of the city function  
 :living_situation - string, one of the living situations; or null if not specified in request  
 :social_group - string, one of the social groups; or null if not specified in request
 
-### /api/list/services
+### /api/list/service_types
 
 ```json
 {
   "_embedded": {
-    "services": [
-      ":service",
+    "service_types": [
+      ":service_type",
       <...>
-    ]
+    ],
+    "service_types_ids": [
+      ":service_type_id",
+      <...>
+    ],
+    "service_types_codes": [
+      ":service_type_code",
+      <...>
+    ],
+    "params": {
+      "living_situation": ":living_situation",
+      "social_group": ":social_group"
+    }
   },
   "_links": {
     "self": {
@@ -266,7 +306,9 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
 }
 ```
 
-:service - string, name of service
+:service_type - string, name of service_type
+:service_type_id - int, id of service_type
+:service_type_code - string, name of service_type
 
 ### /api/list/living_situations
 
@@ -275,6 +317,14 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
   "_embedded": {
     "living_situations": [
       ":living_situation",
+      <...>
+    ],
+    "living_situations_ids": [
+      ":living_situation_id",
+      <...>
+    ],
+    "living_situations_codes": [
+      ":living_situation_code",
       <...>
     ],
     "params": {
@@ -290,7 +340,9 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
 }
 ```
 
-:living_situation - string, one of the living situations
+:living_situation - string, name of the living situation
+:living_situation_id - int, id of the living situation
+:living_situation_code - string, code of the living situation
 :service - string, one of the services; or null if not specified in request  
 :social_group - string, one of the social groups; or null if not specified in request
 
@@ -302,6 +354,10 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
     "districts": [
       ":district_name",
       <...>
+    ],
+    "districts_ids": [
+      ":district_id",
+      <...>
     ]
   },
   "_links": {
@@ -312,7 +368,8 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
 }
 ```
 
-:district_name - string, name of district
+:district_name - string, name of district  
+:district_id - int, id of district
 
 ### /api/list/municipalities
 
@@ -322,7 +379,11 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
     "municipalities": [
       ":municipality_name",
       <...>
-    ]
+    ],
+    "municipalities_ids": [
+      ":municipality_id",
+      <...>
+    ],
   },
   "_links": {
     "self": {
@@ -332,7 +393,8 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
 }
 ```
 
-:municipality_name - string, name of municipality
+:municipality_name - string, name of municipality  
+:municipality_id - int, id of municipality
 
 ### /api/list/city_hierarchy
 
@@ -386,10 +448,14 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
   "_embedded": {
     "infrastructures": [
       {
+        "id": ":infrastructure_id",
         "name": ":infrastructure_name",
+        "code": ":infrastructure_code",
         "functions": [
           {
+            "id": "function_id",
             "name": ":function_name",
+            "code": ":function_code"
             "services": [
               ":service_name",
               <...>
@@ -409,9 +475,15 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
 }
 ```
 
+:infrastructure_id - int, id of infrastructure  
+:function_id - int, id of the city_function  
+:service_id - int, id of the service name  
 :infrastructure_name - string, name of infrastructure  
-:function_name - string, one of the city_functions  
-:service_name - string, one of the service names
+:function_name - string, name of the city_function  
+:service_name - string, name of the service name  
+:infrastructure_code - string, code of infrastructure  
+:function_code - string, code of the city_function  
+:service_code - string, code of the service name
 
 ### /api/relevance/social_groups
 
@@ -511,8 +583,11 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
   "_embedded": {
     "ready": [
       {
-        "service": ":service_name",
-        "count": :service_count
+        "service_type": ":service_type_name",
+        "count": ":service_count",
+        "radius_meters": ":radius_meters",
+        "public_transport_time": ":public_transport_time",
+        "normative": ":normative"
       }, 
       <...>
     ]
@@ -525,8 +600,11 @@ Every endpoint that takes `social_group`, `city_function`, `living_situation`, `
 }
 ```
 
-:service_name - string representing one of the servise types  
-:service_count - int above zero, number of evaluated services of this service type
+:service_type_name - string representing one of the servise types  
+:service_count - int above zero, number of evaluated services of this service type  
+:radius_meters - int or null, radius of service normal availability in meters from its center  
+:public_transport_time - int or null, time of service normal availability in minutes  
+:normative - int, number of people on 1000 of population which will need service normally.
 
 ### /api/provision_v3/services
 
