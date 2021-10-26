@@ -187,17 +187,23 @@ def get_parameter_of_request(
                 return None
         source = {'service_type': listings.service_types, 'city_function': listings.city_functions, 'infrastructure': listings.infrastructures,
                 'social_group': listings.social_groups, 'living_situation': listings.living_situations}[type_of_input]
+        res = None
         if isinstance(input_value, int) or input_value.isnumeric():
             if int(input_value) not in source['id'].unique():
                 if raise_errors:
                     raise ValueError(f'id={input_value} is given for {type_of_input}, but it is out of bounds')
                 else:
                     return None
-            return source[source['id'] == int(input_value)].iloc[0][what_to_get]
+            res = source[source['id'] == int(input_value)].iloc[0][what_to_get]
         if input_value in source['name'].unique():
-            return source[source['name'] == input_value].iloc[0][what_to_get]
+            res = source[source['name'] == input_value].iloc[0][what_to_get]
         if input_value in source['code'].unique():
-            return source[source['code'] == input_value].iloc[0][what_to_get]
+            res = source[source['code'] == input_value].iloc[0][what_to_get]
+        if res is not None:
+            if what_to_get == 'id':
+                return int(res)
+            else:
+                return res
         if raise_errors:
             raise ValueError(f'"{input_value}" is nof found in ids, names or codes of {type_of_input}s')
         else:
@@ -890,7 +896,7 @@ def provision_v3_house(house_id: int) -> Response:
 @app.route('/api/provision_v3/house_services/<int:house_id>', methods=['GET'])
 @app.route('/api/provision_v3/house_services/<int:house_id>/', methods=['GET'])
 def house_services(house_id: int) -> Response:
-    service_type = get_parameter_of_request(request.args.get('service_type'), 'service_type', 'id')
+    service_type = get_parameter_of_request(request.args.get('service_type'), 'service_type', 'name')
     with properties.conn.cursor() as cur:
         if 'service_type' in request.args:
             cur.execute('SELECT a.func_id, a.service_name, ST_AsGeoJSON(a.center), hs.load FROM provision.houses_services hs JOIN all_services a'
