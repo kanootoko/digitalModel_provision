@@ -97,7 +97,7 @@ def update_global_data() -> None:
         needs = needs.merge(tmp, on=['social_group', 'service_type'], how='inner')
 
         cur.execute('SELECT m.id, m.name, m.population, au.id, au.name, au.population FROM municipalities m'
-                '   LEFT JOIN administrative_units au on m.admin_unit_parent_id = m.id'
+                '   LEFT JOIN administrative_units au on m.admin_unit_parent_id = au.id'
                 ' WHERE m.city_id = (SELECT id from cities WHERE name = %s)'
                 ' ORDER BY au.name, m.name', (city_name,))
         city_hierarchy = pd.DataFrame(cur.fetchall(), columns=('municipality_id', 'municipality',
@@ -672,9 +672,9 @@ def provision_v3_services() -> Response:
     with properties.conn.cursor() as cur:
         cur.execute('SELECT ST_AsGeoJSON(a.center), a.city_service_type, a.service_name, a.administrative_unit, a.municipality, a.block_id, a.address,'
                 '    ps.houses_in_radius, ps.people_in_radius, ps.service_load, ps.needed_capacity, ps.reserve_resource, ps.evaluation,'
-                '    ps.functional_object_id as service_id'
-                ' FROM all_services a JOIN provision.services ps ON a.functional_object_id = ps.functional_object_id' + 
-                (' WHERE s.city_service_type = %s' if 'service_type' in request.args else ''), ((service_type,) if 'service_type' in request.args else ()))
+                '    ps.service_id'
+                ' FROM all_services a JOIN provision.services ps ON a.functional_object_id = ps.service_id' + 
+                (' WHERE a.city_service_type = %s' if 'service_type' in request.args else ''), ((service_type,) if 'service_type' in request.args else ()))
         df = pd.DataFrame(cur.fetchall(), columns=('center', 'service_type', 'service_name', 'district', 'municipality', 'block', 'address',
                 'houses_in_access', 'people_in_access', 'service_load', 'needed_capacity', 'reserve_resource', 'provision', 'service_id'))
                 # TODO: 'provision' -> 'evaluation
