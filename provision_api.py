@@ -11,6 +11,8 @@ from typing import Any, Literal, Tuple, List, Dict, Optional, Union, NamedTuple
 
 import logging
 
+import collect_geometry
+
 log = logging.getLogger(__name__)
 
 class NonASCIIJSONEncoder(json.JSONEncoder):
@@ -43,7 +45,8 @@ class Properties:
         if self.conn is not None:
             self._conn.close()
 
-properties: Properties
+houses_properties: Properties
+provision_properties: Properties
 
 needs: pd.DataFrame
 infrastructure: pd.DataFrame
@@ -74,7 +77,7 @@ def update_global_data() -> None:
     global provision_administrative_units
     global provision_municipalities
     global provision_blocks
-    with properties.conn.cursor() as cur:
+    with houses_properties.conn.cursor() as cur:
         cur.execute('SELECT it.id, it.name, it.code, cf.id, cf.name, cf.code, st.id, st.name, st.code FROM city_functions cf'
                 '   JOIN city_infrastructure_types it ON cf.city_infrastructure_type_id = it.id'
                 '   JOIN city_service_types st ON st.city_function_id = cf.id'
@@ -562,7 +565,7 @@ def list_city_hierarchy() -> Response:
 @app.route('/api/', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2021-10-27',
+        'version': '2021-11-29',
         '_links': {
             'self': {
                 'href': request.path
@@ -635,13 +638,20 @@ def api_help() -> Response:
                 'href': '/api/provision_v3/house/{house_id}/{?service_type}',
                 'templated': True
             },
+            'provision_v3_house_availability_zone' : {
+                'href': '/api/provision_v3/house/{house_id}/availability_zone/{?service_type}',
+                'templated': True
+            },
             'provision_v3_house_services': {
-                'href': '/api/provision_v3/house_services/{house_id}/{?service_type}',
+                'href': '/api/provision_v3/house/{house_id}/services/{?service_type}',
                 'templated': True
             },
             'provision_v3_service_houses': {
-                'href': '/api/provision_v3/service_houses/{service_id}/',
+                'href': '/api/provision_v3/service/{service_id}/houses/',
                 'templated': True
+            },
+            'provision_v3_service_availability_zone': {
+                'href': '/api/provision_v3/service/{service_id}/availability_zone/',
             },
             'provision_v3_prosperity_districts': {
                 'href': '/api/provision_v3/prosperity/districts/'
@@ -669,7 +679,7 @@ def provision_v3_services() -> Response:
         service_type = infrastructure[infrastructure['service_type_id'] == int(service_type)]['service_type'].iloc[0] \
                 if int(service_type) in infrastructure['service_type_id'] else f'{service_type} (not found)'
     location = request.args.get('location')
-    with properties.conn.cursor() as cur:
+    with houses_properties.conn.cursor() as cur:
         cur.execute('SELECT ST_AsGeoJSON(a.center), a.city_service_type, a.service_name, a.administrative_unit, a.municipality, a.block_id, a.address,'
                 '    ps.houses_in_radius, ps.people_in_radius, ps.service_load, ps.needed_capacity, ps.reserve_resource, ps.evaluation,'
                 '    ps.service_id'
@@ -710,7 +720,7 @@ def provision_v3_services() -> Response:
 @app.route('/api/provision_v3/service/<int:service_id>/', methods=['GET'])
 def provision_v3_service_info(service_id: int) -> Response:
     service_info = dict()
-    with properties.conn.cursor() as cur:
+    with houses_properties.conn.cursor() as cur:
         cur.execute('SELECT ST_AsGeoJSON(a.center), a.city_service_type, a.service_name, a.administrative_unit, a.municipality, a.block_id, a.address,'
                 '    v.houses_in_radius, v.people_in_radius, v.service_load, v.needed_capacity, v.reserve_resource, v.evaluation as provision'
                 ' FROM all_services a'
@@ -742,12 +752,132 @@ def provision_v3_service_info(service_id: int) -> Response:
         }
     }), 404 if service_info['service_name'] == 'Not found' else 200)
 
+@app.route('/api/provision_v3/service/<int:service_id>/availability_zone', methods=['GET'])
+@app.route('/api/provision_v3/service/<int:service_id>/availability_zone/', methods=['GET'])
+def service_availability_zone(service_id: int) -> Response:
+    error: Optional[str] = None
+    status = 200
+    with houses_properties.conn.cursor() as cur:
+        cur.execute('SELECT ST_X(center), ST_Y(center), city_service_type_id, city_service_type FROM all_services WHERE functional_object_id = %s', (service_id,))
+        res = cur.fetchone()
+        if res is None:
+            error = f'service with id = {service_id} is not found'
+            status = 404
+        else:
+            lat, lng, service_type_id, service_type = res
+            cur.execute('SELECT radius_meters, public_transport_time FROM provision.normatives WHERE city_service_type_id = %s', (service_type_id,))
+            res = cur.fetchone()
+            if res is None:
+                error = f'Normative for service with id = {service_id} (service_type = {service_type} is not found'
+                status = 404
+            else:
+                radius, transport = res
+                if transport is None:
+                    cur.execute('SELECT ST_AsGeoJSON(ST_Buffer(ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s), 6)', (lng, lat, radius))
+                    geometry = json.loads(cur.fetchone()[0])
+                else:
+                    try:
+                        geometry = collect_geom.get_public_transport(lat, lng, transport)
+                    except TimeoutError:
+                        error = f'Timeout on public_transport_service, try later'
+                        status = 408
+                    except Exception as ex:
+                        error = f'Error on public_transport_service: {ex}'
+                        log.error(f'Getting public_transport geometry failed: {ex:r}')
+                        status = 500
+    if error is not None:
+        return make_response(jsonify({
+            '_links': {'self': {'href': request.path}},
+            '_embedded': {
+                'error': error
+            }
+        }), status)
+    return make_response(jsonify({
+        '_links': {'self': {'href': request.path}},
+        '_embedded': {
+            'params': {
+                'service_type': service_type,
+                'radius_meters': radius,
+                'public_transport_time': transport
+            },
+            'geometry': geometry
+        }
+    }))
+    
+@app.route('/api/provision_v3/house/<int:house_id>/availability_zone', methods=['GET'])
+@app.route('/api/provision_v3/house/<int:house_id>/availability_zone/', methods=['GET'])
+def house_availability_zone(house_id: int) -> Response:
+    error: Optional[str] = None
+    status = 200
+    if 'service_type' not in request.args:
+        error = '?service_type=... is missing in request. It is required to set this parameter'
+        status = 404
+    else:
+        service_type_id = get_parameter_of_request(request.args['service_type'], 'service_type', 'id')
+        with houses_properties.conn.cursor() as cur:
+            cur.execute('SELECT ST_X(center), ST_Y(center) FROM houses WHERE functional_object_id = %s', (house_id,))
+            res = cur.fetchone()
+            if res is None:
+                error = f'house with id = {house_id} is not found'
+                status = 404
+            else:
+                lat, lng = res
+                cur.execute('SELECT radius_meters, public_transport_time FROM provision.normatives WHERE city_service_type_id = %s', (service_type_id,))
+                res = cur.fetchone()
+                if res is None:
+                    error = f'Normative for service_type = {request.args["service_type"]} is not found'
+                    status = 404
+                else:
+                    radius, transport = res
+                    if transport is None:
+                        cur.execute('SELECT ST_AsGeoJSON(ST_Buffer(ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s), 6)', (lng, lat, radius))
+                        geometry = json.loads(cur.fetchone()[0])
+                    else:
+                        try:
+                            geometry = collect_geom.get_public_transport(lat, lng, transport)
+                        except TimeoutError:
+                            error = f'Timeout on public_transport_service, try later'
+                            status = 408
+                        except Exception as ex:
+                            error = f'Error on public_transport_service: {ex}'
+                            log.error(f'Getting public_transport geometry failed: {ex:r}')
+                            status = 500
+    if error is not None:
+        return make_response(jsonify({
+            '_links': {'self': {'href': request.path}},
+            '_embedded': {
+                'error': error
+            }
+        }), status)
+    return make_response(jsonify({
+        '_links': {'self': {'href': request.path}},
+        '_embedded': {
+            'params': {
+                'service_type': request.args['service_type'],
+                'radius_meters': radius,
+                'public_transport_time': transport
+            },
+            'geometry': geometry
+        }
+    }))
+    
+
 @app.route('/api/provision_v3/houses', methods=['GET'])
 @app.route('/api/provision_v3/houses/', methods=['GET'])
 def provision_v3_houses() -> Response:
     service_type = get_parameter_of_request(request.args.get('service_type'), 'service_type', 'id')
     location = request.args.get('location')
     location_tuple: Optional[Tuple[Literal['district', 'municipality'], int]] = None
+    social_group: Optional[str] = request.args.get('social_group')
+    if social_group:
+        if social_group == 'mean':
+            significances = {service_type: needs[needs['service_type'] == service_type]['significance'].mean() for \
+                    service_type in get_service_types(to_list=True)}
+        else:
+            social_group = get_parameter_of_request(social_group, 'social_group', 'name') # type: ignore
+            significances = {service_type: needs[(needs['service_type'] == service_type) & (needs['social_group'] == social_group)]['significance'].mean() \
+                    for service_type in get_service_types(to_list=True)}
+            significances = {key: val for key, val in filter(lambda x: x[1] == x[1], significances.items())}
     if location is not None:
         if location in city_hierarchy['district'].unique():
             location_tuple = 'district', int(city_hierarchy[city_hierarchy['district'] == location]['district_id'].iloc[0])
@@ -767,7 +897,7 @@ def provision_v3_houses() -> Response:
                 'error': "at least one of the 'service_type' and 'location' must be set in request. To avoid this error use ?everything parameter"
             }
         }), 400)
-    with properties.conn.cursor() as cur:
+    with houses_properties.conn.cursor() as cur:
         cur.execute('SELECT h.functional_object_id, h.address, ST_AsGeoJSON(h.center), h.resident_number,'
                 '   h.administrative_unit, h.municipality, h.block_id FROM houses h' +
                 (' WHERE' if location_tuple or service_type else '') +
@@ -788,8 +918,18 @@ def provision_v3_houses() -> Response:
                     ('AND st.id = %s' if service_type else ''),
                     (house_id, service_type,) if service_type else (house_id,)
             )
-            service_types = [{'service_type': service_type, 'reserve_resources': reserve, 'provision': provision} \
-                    for service_type, reserve, provision in cur.fetchall()]
+            if social_group is None:
+                service_types = [{'service_type': service_type, 'reserve_resources': reserve, 'provision': provision} \
+                        for service_type, reserve, provision in cur.fetchall()]
+            else:
+                if social_group == 'mean':
+                    service_types = [{'service_type': service_type, 'reserve_resources': reserve, 'provision': provision,
+                            'prosperity': 10 + round(float(significances[service_type]) * (provision - 10), 2) if service_type in significances else None} \
+                        for service_type, reserve, provision in cur.fetchall()]
+                else:
+                    service_types = [{'service_type': service_type, 'reserve_resources': reserve, 'provision': provision,
+                            'prosperity': 10 + round(float(significances[service_type] * (provision - 10)), 2) if service_type in significances else None} \
+                        for service_type, reserve, provision in cur.fetchall()]
             result.append({
                 'id': house_id,
                 'address': address,
@@ -804,12 +944,13 @@ def provision_v3_houses() -> Response:
         '_links': {
             'self': {'href': request.path},
             'services': {'href': '/api/provision_v3/house_services/{house_id}/{?service_type}', 'templated': True},
-            'house_info': {'href': '/api/provision_v3/house/{house_id}/{?service_type}', 'templated': True}
+            'house_info': {'href': '/api/provision_v3/house/{house_id}/{?service_type,social_group}', 'templated': True}
         },
         '_embedded': {
             'parameters': {
                 'service_type': service_type,
-                'location': location
+                'location': location,
+                'social_group': social_group
             },
             'houses': result
         }
@@ -818,8 +959,19 @@ def provision_v3_houses() -> Response:
 @app.route('/api/provision_v3/house/<int:house_id>', methods=['GET'])
 @app.route('/api/provision_v3/house/<int:house_id>/', methods=['GET'])
 def provision_v3_house(house_id: int) -> Response:
+    service_type = get_parameter_of_request(request.args.get('service_type'), 'service_type', 'id')
+    social_group: Optional[str] = request.args.get('social_group')
+    if social_group:
+        if social_group == 'mean':
+            significances = {service_type: needs[needs['service_type'] == service_type]['significance'].mean() for \
+                    service_type in get_service_types(to_list=True)}
+        else:
+            social_group = get_parameter_of_request(social_group, 'social_group', 'name') # type: ignore
+            significances = {service_type: needs[(needs['service_type'] == service_type) & (needs['social_group'] == social_group)]['significance'].mean() \
+                    for service_type in get_service_types(to_list=True)}
+            significances = {key: val for key, val in filter(lambda x: x[1] == x[1], significances.items())}
     house_info: Dict[str, Any] = dict()
-    with properties.conn.cursor() as cur:
+    with houses_properties.conn.cursor() as cur:
         cur.execute('SELECT address, ST_AsGeoJSON(center), administrative_unit, municipality, block_id, resident_number FROM houses'
                 ' WHERE functional_object_id = %s',
                 (house_id,))
@@ -831,33 +983,46 @@ def provision_v3_house(house_id: int) -> Response:
             house_info['address'], house_info['center'], house_info['district'], house_info['municipality'], house_info['block'], house_info['population'] = res
             house_info['center'] = json.loads(house_info['center'])
             house_info['block'] = int(house_info['block']) if house_info['block'] == house_info['block'] else None
-            cur.execute('SELECT st.name as service_type, ph.reserve_resource, ph.provision FROM provision.houses ph'
+            cur.execute('SELECT st.name, ph.reserve_resource, ph.provision FROM provision.houses ph'
                     '   JOIN city_service_types st ON ph.city_service_type_id = st.id' + 
                     ' WHERE ph.house_id  = %s' + 
-                    (' AND st.name = %s' if 'service_type' in request.args and not request.args['service_type'].isnumeric() else \
-                            ' AND st.id = %s' if 'service_type' in request.args else ''),
-                    (house_id, request.args['service_type']) if 'service_type' in request.args else (house_id,))
+                    ('AND st.id = %s' if service_type else ''),
+                    (house_id, service_type,) if service_type else (house_id,)
+            )
             house_service_types = pd.DataFrame(cur.fetchall(),
                     columns=('service_type', 'reserve_resource', 'provision'))
     if house_info['address'] != 'Not found':
-        house_info['services'] = [{'service_type': service_type, 'reserve_resources': reserve, 'provision': provision} \
+        if social_group is None:
+            house_info['service_types'] = [{'service_type': service_type, 'reserve_resources': reserve, 'provision': provision} \
                 for _, (service_type, reserve, provision) in house_service_types[['service_type', 'reserve_resource', 'provision']].iterrows()]
+        else:
+            if social_group == 'mean':
+                house_info['service_types'] = [{'service_type': service_type, 'reserve_resources': reserve, 'provision': provision,
+                        'prosperity': 10 + round(float(significances[service_type]) * (provision - 10), 2) if service_type in significances else None} \
+                    for _, (service_type, reserve, provision) in house_service_types[['service_type', 'reserve_resource', 'provision']].iterrows()]
+            else:
+                house_info['service_types'] = [{'service_type': service_type, 'reserve_resources': reserve, 'provision': provision,
+                        'prosperity': 10 + round(float(significances[service_type] * (provision - 10)), 2) if service_type in significances else None} \
+                    for _, (service_type, reserve, provision) in house_service_types[['service_type', 'reserve_resource', 'provision']].iterrows()]
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
             'house': house_info,
             'parameters': {
                 'house_id': house_id,
-                'service_type': request.args.get('service_type')
+                'service_type': request.args.get('service_type'),
+                'social_group': social_group
             }
         }
     }), 404 if house_info['address'] == 'Not found' else 200)
 
 @app.route('/api/provision_v3/house_services/<int:house_id>', methods=['GET'])
 @app.route('/api/provision_v3/house_services/<int:house_id>/', methods=['GET'])
+@app.route('/api/provision_v3/house/<int:house_id>/services', methods=['GET'])
+@app.route('/api/provision_v3/house/<int:house_id>/services/', methods=['GET'])
 def house_services(house_id: int) -> Response:
     service_type = get_parameter_of_request(request.args.get('service_type'), 'service_type', 'name')
-    with properties.conn.cursor() as cur:
+    with houses_properties.conn.cursor() as cur:
         if 'service_type' in request.args:
             cur.execute('SELECT hs.service_id, a.service_name, ST_AsGeoJSON(a.center), hs.load,'
                     '      (SELECT sum(load) FROM provision.houses_services WHERE service_id = hs.service_id) FROM provision.houses_services hs'
@@ -884,8 +1049,10 @@ def house_services(house_id: int) -> Response:
 
 @app.route('/api/provision_v3/service_houses/<int:service_id>', methods=['GET'])
 @app.route('/api/provision_v3/service_houses/<int:service_id>/', methods=['GET'])
+@app.route('/api/provision_v3/service/<int:service_id>/houses', methods=['GET'])
+@app.route('/api/provision_v3/service/<int:service_id>/houses/', methods=['GET'])
 def service_houses(service_id: int) -> Response:
-    with properties.conn.cursor() as cur:
+    with houses_properties.conn.cursor() as cur:
         cur.execute('SELECT normative FROM provision.normatives'
                 ' WHERE city_service_type_id = (SELECT city_service_type_id FROM all_services WHERE functional_object_id = %s)', (service_id,))
         res = cur.fetchone()
@@ -908,7 +1075,7 @@ def service_houses(service_id: int) -> Response:
 @app.route('/api/provision_v3/ready', methods=['GET'])
 @app.route('/api/provision_v3/ready/', methods=['GET'])
 def provision_v3_ready() -> Response:
-    with properties.conn.cursor() as cur:
+    with houses_properties.conn.cursor() as cur:
         cur.execute('SELECT c.city_service_type, c.count, n.normative, n.max_load, n.radius_meters, '
                 '   n.public_transport_time, n.service_evaluation, n.house_evaluation'
                 ' FROM (SELECT a.city_service_type_id, a.city_service_type, count(*) FROM all_services a'
@@ -933,7 +1100,7 @@ def provision_v3_ready() -> Response:
 @app.route('/api/provision_v3/not_ready', methods=['GET'])
 @app.route('/api/provision_v3/not_ready/', methods=['GET'])
 def provision_v3_not_ready() -> Response:
-    with properties.conn.cursor() as cur:
+    with houses_properties.conn.cursor() as cur:
         cur.execute('SELECT st.name as service_type, s.count AS unevaluated, c.count AS total'
                 ' FROM (SELECT city_service_type_id, count(*) FROM all_services WHERE functional_object_id NOT IN'
                 '       (SELECT service_id FROM provision.services) AND city = %s'
@@ -1158,7 +1325,7 @@ def not_found(_):
 
 @app.errorhandler(Exception)
 def any_error(error: Exception):
-    properties.conn.rollback()
+    houses_properties.conn.rollback()
     log.error(f'Error at {request.path}?{"&".join(map(lambda x: f"{x[0]}={x[1]}", request.args.items()))} - {repr(error)}')
     log.warning('\n'.join(traceback.format_tb(error.__traceback__)))
     return make_response(jsonify({
@@ -1172,80 +1339,140 @@ def any_error(error: Exception):
 
 if __name__ == '__main__':
 
-    # Default properties settings
+    # Default houses_properties settings
 
-    properties = Properties('localhost', 5432, 'city_db_final', 'postgres', 'postgres', 8080)
+    houses_properties = Properties('localhost', 5432, 'city_db_final', 'postgres', 'postgres', 8080)
+    provision_properties = Properties('localhost', 5432, 'provision', 'postgres', 'postgres', 8080)
+    public_transport_endpoint = 'http://10.32.1.61:8080/api.v2/isochrones'
+    personal_transport_endpoint = 'http://10.32.1.61:8080/api.v2/isochrones'
+    walking_endpoint = 'http://10.32.1.62:5002/pedastrian_walk/isochrones?x_from={lng}&y_from={lat}&times={t}'
 
     # Environment variables
 
     if 'PROVISION_API_PORT' in os.environ:
-        properties.api_port = int(os.environ['PROVISION_API_PORT'])
+        houses_properties.api_port = int(os.environ['PROVISION_API_PORT'])
     if 'PROVISION_CITY_NAME' in os.environ:
         city_name = os.environ['PROVISION_CITY_NAME']
+    if 'PUBLIC_TRANSPORT_ENDPOINT' in os.environ:
+        public_transport_endpoint = os.environ['PUBLIC_TRANSPORT_ENDPOINT']
+    if 'PERSONAL_TRANSPORT_ENDPOINT' in os.environ:
+        personal_transport_endpoint = os.environ['PERSONAL_TRANSPORT_ENDPOINT']
+    if 'WALKING_ENDPOINT' in os.environ:
+        walking_endpoint = os.environ['WALKING_ENDPOINT']
     if 'HOUSES_DB_ADDR' in os.environ:
-        properties.db_addr = os.environ['HOUSES_DB_ADDR']
+        houses_properties.db_addr = os.environ['HOUSES_DB_ADDR']
     if 'HOUSES_DB_NAME' in os.environ:
-        properties.db_name = os.environ['HOUSES_DB_NAME']
+        houses_properties.db_name = os.environ['HOUSES_DB_NAME']
     if 'HOUSES_DB_PORT' in os.environ:
-        properties.db_port = int(os.environ['HOUSES_DB_PORT'])
+        houses_properties.db_port = int(os.environ['HOUSES_DB_PORT'])
     if 'HOUSES_DB_USER' in os.environ:
-        properties.db_user = os.environ['HOUSES_DB_USER']
+        houses_properties.db_user = os.environ['HOUSES_DB_USER']
     if 'HOUSES_DB_PASS' in os.environ:
-        properties.db_pass = os.environ['HOUSES_DB_PASS']
+        houses_properties.db_pass = os.environ['HOUSES_DB_PASS']
+    if 'PROVISION_DB_ADDR' in os.environ:
+        provision_properties.db_addr = os.environ['PROVISION_DB_ADDR']
+    if 'PROVISION_DB_NAME' in os.environ:
+        provision_properties.db_name = os.environ['PROVISION_DB_NAME']
+    if 'PROVISION_DB_PORT' in os.environ:
+        provision_properties.db_port = int(os.environ['PROVISION_DB_PORT'])
+    if 'PROVISION_DB_USER' in os.environ:
+        provision_properties.db_user = os.environ['PROVISION_DB_USER']
+    if 'PROVISION_DB_PASS' in os.environ:
+        provision_properties.db_pass = os.environ['PROVISION_DB_PASS']
 
     # CLI Arguments
 
     parser = argparse.ArgumentParser(description='Starts up the provision API server')
     parser.add_argument('-hH', '--houses_db_addr', action='store', dest='houses_db_addr',
-                        help=f'postgres host address [default: {properties.db_addr}]', type=str)
+                        help=f'postgres host address for the main database [default: {houses_properties.db_addr}]', type=str)
     parser.add_argument('-hP', '--houses_db_port', action='store', dest='houses_db_port',
-                        help=f'postgres port number [default: {properties.db_port}]', type=int)
+                        help=f'postgres port number for the main database [default: {houses_properties.db_port}]', type=int)
     parser.add_argument('-hd', '--houses_db_name', action='store', dest='houses_db_name',
-                        help=f'postgres database name [default: {properties.db_name}]', type=str)
+                        help=f'postgres database name for the main database [default: {houses_properties.db_name}]', type=str)
     parser.add_argument('-hU', '--houses_db_user', action='store', dest='houses_db_user',
-                        help=f'postgres user name [default: {properties.db_user}]', type=str)
+                        help=f'postgres user name for the main database [default: {houses_properties.db_user}]', type=str)
     parser.add_argument('-hW', '--houses_db_pass', action='store', dest='houses_db_pass',
-                        help=f'database user password [default: {properties.db_pass}]', type=str)
-    parser.add_argument('-c', '--city_name', action='store', dest='city_name',
-                        help=f'city name [default: {city_name}]', type=str)
+                        help=f'database user password for the main database [default: {provision_properties.db_pass}]', type=str)
+    parser.add_argument('-pH', '--provision_db_addr', action='store', dest='provision_db_addr',
+                        help=f'postgres host address for the provision database [default: {provision_properties.db_addr}]', type=str)
+    parser.add_argument('-pP', '--provision_db_port', action='store', dest='provision_db_port',
+                        help=f'postgres port number for the provision database [default: {provision_properties.db_port}]', type=int)
+    parser.add_argument('-pd', '--provision_db_name', action='store', dest='provision_db_name',
+                        help=f'postgres database name for the provision database [default: {provision_properties.db_name}]', type=str)
+    parser.add_argument('-pU', '--provision_db_user', action='store', dest='provision_db_user',
+                        help=f'postgres user name for the provision database [default: {provision_properties.db_user}]', type=str)
+    parser.add_argument('-pW', '--provision_db_pass', action='store', dest='provision_db_pass',
+                        help=f'database user password for the provision database [default: {provision_properties.db_pass}]', type=str)
+    parser.add_argument('-c', '--city_name', action='store', dest='city_name', help=f'city name [default: {city_name}]', type=str)
+    parser.add_argument('-pubT', '--public_transport_endpoint', action='store', dest='public_transport_endpoint',
+                        help=f'endpoint for getting public transport polygons [default: {public_transport_endpoint}]', type=str)
+    parser.add_argument('-perT', '--personal_transport_endpoint', action='store', dest='personal_transport_endpoint',
+                        help=f'endpoint for getting personal transport polygons [default: {personal_transport_endpoint}]', type=str)
+    parser.add_argument('-wlkT', '--walking_endpoint', action='store', dest='walking_endpoint',
+                        help=f'endpoint for getting walking polygons [default: {walking_endpoint}]', type=str)
     parser.add_argument('-p', '--port', action='store', dest='api_port',
-                        help=f'postgres port number [default: {properties.api_port}]', type=int)
+                        help=f'postgres port number [default: {houses_properties.api_port}]', type=int)
     parser.add_argument('-D', '--debug', action='store_true', dest='debug', help=f'debug trigger')
     args = parser.parse_args()
 
     if args.houses_db_addr is not None:
-        properties.db_addr = args.houses_db_addr
+        houses_properties.db_addr = args.houses_db_addr
     if args.houses_db_port is not None:
-        properties.db_port = args.houses_db_port
+        houses_properties.db_port = args.houses_db_port
     if args.houses_db_name is not None:
-        properties.db_name = args.houses_db_name
+        houses_properties.db_name = args.houses_db_name
     if args.houses_db_user is not None:
-        properties.db_user = args.houses_db_user
+        houses_properties.db_user = args.houses_db_user
     if args.houses_db_pass is not None:
-        properties.db_pass = args.houses_db_pass
+        houses_properties.db_pass = args.houses_db_pass
+    if args.provision_db_addr is not None:
+        provision_properties.db_addr = args.provision_db_addr
+    if args.provision_db_port is not None:
+        provision_properties.db_port = args.provision_db_port
+    if args.provision_db_name is not None:
+        provision_properties.db_name = args.provision_db_name
+    if args.provision_db_user is not None:
+        provision_properties.db_user = args.provision_db_user
+    if args.provision_db_pass is not None:
+        provision_properties.db_pass = args.provision_db_pass
     if args.city_name is not None:
         city_name = args.city_name
+    if args.public_transport_endpoint is not None:
+        public_transport_endpoint = args.public_transport_endpoint
+    if args.personal_transport_endpoint is not None:
+        personal_transport_endpoint = args.personal_transport_endpoint
+    if args.walking_endpoint is not None:
+        walking_endpoint = args.walking_endpoint
     if args.api_port is not None:
-        properties.api_port = args.api_port
+        houses_properties.api_port = args.api_port
 
-    logging.basicConfig(handlers = (logging.StreamHandler(),), level=0, format='%(message)s')
-    log.setLevel(0)
+    log_handler = logging.StreamHandler()
+    log_handler.setFormatter(logging.Formatter(fmt='api [{levelname}] - {asctime}: {message}', datefmt='%Y-%m-%d %H:%M:%S', style='{'))
+    log_handler.setLevel('INFO')
+    log.setLevel('INFO')
+    log.addHandler(log_handler)
     
     log.info('Getting global data')
 
     update_global_data()
 
-    log.info(f'Starting application on 0.0.0.0:{properties.api_port} with houses DB as'
-            f' ({properties.db_user}@{properties.db_addr}:{properties.db_port}/{properties.db_name}).')
+    log.info(f'Starting application on 0.0.0.0:{houses_properties.api_port} with houses DB as'
+            f' ({houses_properties.db_user}@{houses_properties.db_addr}:{houses_properties.db_port}/{houses_properties.db_name}) and provision DB as'
+            f' ({provision_properties.db_user}@{provision_properties.db_addr}:{provision_properties.db_port}/{provision_properties.db_name}).')
+
+    log.info(f'Public_ransport exnpoint is set to "{public_transport_endpoint}", personal_transport endpoint = "{personal_transport_endpoint}",'
+            f' walking endpoint = "{walking_endpoint}"')
+    collect_geom = collect_geometry.CollectGeometry(provision_properties.conn, public_transport_endpoint, personal_transport_endpoint,
+            walking_endpoint, raise_exceptions=True, download_geometry_after_timeout=True)
 
     if args.debug:
-        app.run(host='0.0.0.0', port=properties.api_port, debug=args.debug)
+        app.run(host='0.0.0.0', port=houses_properties.api_port, debug=args.debug)
     else:
         import gevent.pywsgi
 
-        app_server = gevent.pywsgi.WSGIServer(('0.0.0.0', properties.api_port), app)
+        app_server = gevent.pywsgi.WSGIServer(('0.0.0.0', houses_properties.api_port), app)
         try:
             app_server.serve_forever()
         except KeyboardInterrupt:
-            log.info('Finishing')
+            log.info('Finishing the provision_api server')
             app_server.stop()
