@@ -52,6 +52,8 @@ needs: pd.DataFrame
 infrastructure: pd.DataFrame
 blocks: pd.DataFrame
 city_hierarchy: pd.DataFrame
+cities_service_types: Dict[str, Dict[str, int]]
+city_division_type: Dict[str, str]
 
 Listings = NamedTuple('Listings', [
     ('infrastructures', pd.DataFrame),
@@ -62,11 +64,11 @@ Listings = NamedTuple('Listings', [
 ])
 listings: Listings
 
-provision_administrative_units: pd.DataFrame
-provision_municipalities: pd.DataFrame
-provision_blocks: pd.DataFrame
+provision_administrative_units: Dict[str, pd.DataFrame] = {}
+provision_municipalities: Dict[str, pd.DataFrame] = {}
+provision_blocks: Dict[str, pd.DataFrame] = {}
 
-city_name = 'Санкт-Петербург'
+default_city = 'Санкт-Петербург'
 
 def update_global_data() -> None:
     global needs
@@ -77,7 +79,9 @@ def update_global_data() -> None:
     global provision_administrative_units
     global provision_municipalities
     global provision_blocks
-    with houses_properties.conn.cursor() as cur:
+    global cities_service_types
+    global city_division_type
+    with houses_properties.conn, houses_properties.conn.cursor() as cur:
         cur.execute('SELECT it.id, it.name, it.code, cf.id, cf.name, cf.code, st.id, st.name, st.code FROM city_functions cf'
                 '   JOIN city_infrastructure_types it ON cf.city_infrastructure_type_id = it.id'
                 '   JOIN city_service_types st ON st.city_function_id = cf.id'
@@ -99,67 +103,93 @@ def update_global_data() -> None:
         tmp = pd.DataFrame(cur.fetchall(), columns=('social_group', 'service_type', 'significance'))
         needs = needs.merge(tmp, on=['social_group', 'service_type'], how='inner')
 
-        cur.execute('SELECT m.id, m.name, m.population, au.id, au.name, au.population FROM municipalities m'
-                '   LEFT JOIN administrative_units au on m.admin_unit_parent_id = au.id'
-                ' WHERE m.city_id = (SELECT id from cities WHERE name = %s)'
-                ' ORDER BY au.name, m.name', (city_name,))
-        city_hierarchy = pd.DataFrame(cur.fetchall(), columns=('municipality_id', 'municipality',
-                'municipality_population', 'district_id', 'district', 'district_population'))
+        cur.execute('SELECT city, city_service_type, count(*) FROM all_services GROUP BY city, city_service_type')
+        cities_service_types = {}
+        for city, service_type, count in cur.fetchall():
+            if city not in cities_service_types:
+                cities_service_types[city] = {}
+            cities_service_types[city][service_type] = count
 
-        cur.execute('SELECT b.id, b.population, m.name as municipality, au.name as district FROM blocks b'
+        cur.execute('SELECT c.id, c.name, c.population, m.id, m.name, m.population, au.id, au.name, au.population FROM cities c'
+                '   LEFT JOIN administrative_units au ON au.city_id = c.id'
+                '   LEFT JOIN municipalities m ON m.admin_unit_parent_id = au.id'
+                " WHERE c.city_division_type = 'ADMIN_UNIT_PARENT'"
+                ' UNION'
+                ' SELECT c.id, c.name, c.population, m.id, m.name, m.population, au.id, au.name, au.population FROM cities c'
+                '   LEFT JOIN municipalities m ON m.city_id = c.id'
+                '   LEFT JOIN administrative_units au ON au.municipality_parent_id = m.id'
+                " WHERE c.city_division_type = 'MUNICIPALITY_PARENT'"
+                ' UNION'
+                ' SELECT c.id, c.name, c.population, m.id, m.name, m.population, null, null, null FROM cities c'
+                '   LEFT JOIN municipalities m ON m.city_id = c.id'
+                " WHERE c.city_division_type = 'NO_PARENT'"
+                ' UNION'
+                ' SELECT c.id, c.name, c.population, null, null, null, au.id, au.name, au.population FROM cities c'
+                '   JOIN administrative_units au ON au.city_id = c.id'
+                " WHERE c.city_division_type = 'NO_PARENT'"
+                ' ORDER BY 2, 5, 8')
+        city_hierarchy = pd.DataFrame(cur.fetchall(), columns=('city_id', 'city', 'city_population', 'municipality_id', 'municipality',
+                'municipality_population', 'district_id', 'district', 'district_population'))
+        city_hierarchy = city_hierarchy.replace({np.nan: None})
+
+        cur.execute('SELECT b.id, b.population, m.name as municipality, au.name as district, c.name as city FROM blocks b'
                 '   LEFT JOIN municipalities m ON st_within(b.center, m.geometry)'
                 '   LEFT JOIN administrative_units au ON au.id = m.admin_unit_parent_id'
-                ' WHERE b.city_id = (SELECT id from cities WHERE name = %s)'
-                ' ORDER BY 4, 3, 1', (city_name,))
-        blocks = pd.DataFrame(cur.fetchall(), columns=('id', 'population', 'municipality', 'district')).set_index('id')
+                '   JOIN cities c ON b.city_id = c.id'
+                ' ORDER BY 4, 3, 1')
+        blocks = pd.DataFrame(cur.fetchall(), columns=('id', 'population', 'municipality', 'district', 'city')).set_index('id')
         blocks['population'] = blocks['population'].replace({np.nan: None})
 
-        cur.execute('SELECT loc.name, st.name, houses.count, prov.count, prov.service_load_mean, prov.service_load_sum,'
-                '   houses.provision_mean, prov.evaluation_mean, prov.reserve_resources_mean, prov.reserve_resources_sum,'
-                '   houses.reserve_resources_mean, houses.reserve_resources_sum'
-                ' FROM provision.services_administrative_units prov'
-                '   JOIN provision.houses_administrative_units houses ON'
-                '       houses.city_service_type_id = prov.city_service_type_id and houses.administrative_unit_id = prov.administrative_unit_id'
-                '   JOIN administrative_units loc ON prov.administrative_unit_id = loc.id'
-                '   JOIN city_service_types st ON prov.city_service_type_id = st.id'
-                ' WHERE loc.city_id = (SELECT id from cities WHERE name = %s)'
-                ' ORDER BY 1, 2',
-                (city_name,)
-        )
-        provision_administrative_units = pd.DataFrame(cur.fetchall(), columns=('district', 'service_type', 'houses_count', 'services_count',
-                'services_load_mean', 'services_load_sum', 'houses_provision', 'services_evaluation', 'services_reserve_mean', 'services_reserve_sum',
-                'houses_reserve_mean', 'houses_reserve_sum'))
+        for city in city_hierarchy['city'].unique():
+            cur.execute('SELECT loc.name, st.name, houses.count, prov.count, prov.service_load_mean, prov.service_load_sum,'
+                    '   houses.provision_mean, prov.evaluation_mean, prov.reserve_resources_mean, prov.reserve_resources_sum,'
+                    '   houses.reserve_resources_mean, houses.reserve_resources_sum'
+                    ' FROM provision.services_administrative_units prov'
+                    '   JOIN provision.houses_administrative_units houses ON'
+                    '       houses.city_service_type_id = prov.city_service_type_id and houses.administrative_unit_id = prov.administrative_unit_id'
+                    '   JOIN administrative_units loc ON prov.administrative_unit_id = loc.id'
+                    '   JOIN city_service_types st ON prov.city_service_type_id = st.id'
+                    ' WHERE loc.city_id = (SELECT id from cities WHERE name = %s)'
+                    ' ORDER BY 1, 2',
+                    (city,)
+            )
+            provision_administrative_units[city] = pd.DataFrame(cur.fetchall(), columns=('district', 'service_type', 'houses_count', 'services_count',
+                    'services_load_mean', 'services_load_sum', 'houses_provision', 'services_evaluation', 'services_reserve_mean', 'services_reserve_sum',
+                    'houses_reserve_mean', 'houses_reserve_sum'))
 
-        cur.execute('SELECT loc.name, st.name, houses.count, eval.count, eval.service_load_mean, eval.service_load_sum,'
-                '   houses.provision_mean, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum,'
-                '   houses.reserve_resources_mean, houses.reserve_resources_sum'
-                ' FROM provision.services_municipalities eval'
-                '   JOIN provision.houses_municipalities houses ON'
-                '       houses.city_service_type_id = eval.city_service_type_id and houses.municipality_id = eval.municipality_id'
-                '   JOIN municipalities loc ON eval.municipality_id = loc.id'
-                '   JOIN city_service_types st ON eval.city_service_type_id = st.id'
-                ' WHERE loc.city_id = (SELECT id from cities WHERE name = %s)'
-                ' ORDER BY 1, 2',
-                (city_name,)
-        )
-        provision_municipalities = pd.DataFrame(cur.fetchall(), columns=('municipality', 'service_type', 'houses_count', 'services_count',
-                'services_load_mean', 'services_load_sum', 'houses_provision', 'services_evaluation', 'services_reserve_mean',
-                'services_reserve_sum', 'houses_reserve_mean', 'houses_reserve_sum'))
+            cur.execute('SELECT loc.name, st.name, houses.count, eval.count, eval.service_load_mean, eval.service_load_sum,'
+                    '   houses.provision_mean, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum,'
+                    '   houses.reserve_resources_mean, houses.reserve_resources_sum'
+                    ' FROM provision.services_municipalities eval'
+                    '   JOIN provision.houses_municipalities houses ON'
+                    '       houses.city_service_type_id = eval.city_service_type_id and houses.municipality_id = eval.municipality_id'
+                    '   JOIN municipalities loc ON eval.municipality_id = loc.id'
+                    '   JOIN city_service_types st ON eval.city_service_type_id = st.id'
+                    ' WHERE loc.city_id = (SELECT id from cities WHERE name = %s)'
+                    ' ORDER BY 1, 2',
+                    (city,)
+            )
+            provision_municipalities[city] = pd.DataFrame(cur.fetchall(), columns=('municipality', 'service_type', 'houses_count', 'services_count',
+                    'services_load_mean', 'services_load_sum', 'houses_provision', 'services_evaluation', 'services_reserve_mean',
+                    'services_reserve_sum', 'houses_reserve_mean', 'houses_reserve_sum'))
 
-        cur.execute('SELECT eval.block_id, s.name, houses.count, eval.count, eval.service_load_mean, eval.service_load_sum,'
-                '   houses.provision_mean, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum,'
-                '   houses.reserve_resources_mean, houses.reserve_resources_sum'
-                ' FROM provision.services_blocks eval'
-                '   JOIN blocks b ON eval.block_id = b.id'
-                '   JOIN provision.houses_blocks houses ON houses.city_service_type_id = eval.city_service_type_id and houses.block_id = eval.block_id'
-                '   JOIN city_service_types s ON eval.city_service_type_id = s.id'
-                ' WHERE b.city_id = (SELECT id from cities WHERE name = %s)'
-                ' ORDER BY 1, 2',
-                (city_name,)
-        )
-        provision_blocks = pd.DataFrame(cur.fetchall(), columns=('block', 'service_type', 'houses_count', 'services_count', 'services_load_mean',
-                'services_load_sum', 'houses_provision', 'services_evaluation', 'services_reserve_mean', 'services_reserve_sum',
-                'houses_reserve_mean', 'houses_reserve_sum'))
+            cur.execute('SELECT eval.block_id, s.name, houses.count, eval.count, eval.service_load_mean, eval.service_load_sum,'
+                    '   houses.provision_mean, eval.evaluation_mean, eval.reserve_resources_mean, eval.reserve_resources_sum,'
+                    '   houses.reserve_resources_mean, houses.reserve_resources_sum'
+                    ' FROM provision.services_blocks eval'
+                    '   JOIN blocks b ON eval.block_id = b.id'
+                    '   JOIN provision.houses_blocks houses ON houses.city_service_type_id = eval.city_service_type_id and houses.block_id = eval.block_id'
+                    '   JOIN city_service_types s ON eval.city_service_type_id = s.id'
+                    ' WHERE b.city_id = (SELECT id from cities WHERE name = %s)'
+                    ' ORDER BY 1, 2',
+                    (city,)
+            )
+            provision_blocks[city] = pd.DataFrame(cur.fetchall(), columns=('block', 'service_type', 'houses_count', 'services_count', 'services_load_mean',
+                    'services_load_sum', 'houses_provision', 'services_evaluation', 'services_reserve_mean', 'services_reserve_sum',
+                    'houses_reserve_mean', 'houses_reserve_sum'))
+
+        cur.execute('SELECT name, city_division_type FROM cities')
+        city_division_type = {city_name: division_type for city_name, division_type in cur.fetchall()}
 
         cur.execute('SELECT id, name, code FROM city_functions ORDER BY name')
         city_functions = pd.DataFrame(cur.fetchall(), columns=('id', 'name', 'code'))
@@ -177,7 +207,7 @@ def update_global_data() -> None:
 
 def get_parameter_of_request(
         input_value: Optional[Union[str, int]],
-        type_of_input: Literal['service_type', 'city_function', 'infrastructure', 'living_situation', 'social_group'],
+        type_of_input: Literal['service_type', 'city_function', 'infrastructure', 'living_situation', 'social_group', 'city'],
         what_to_get: Literal['name', 'code', 'id'] = 'name',
         raise_errors: bool = False) -> Optional[Union[int, str]]:
     if input_value is None:
@@ -211,6 +241,26 @@ def get_parameter_of_request(
             raise ValueError(f'"{input_value}" is not found in ids, names or codes of {type_of_input}s')
         else:
             return None
+    elif type_of_input == 'city':
+        if what_to_get not in ('name', 'id'):
+            if raise_errors:
+                raise ValueError(f'"{what_to_get}" could not be get from {type_of_input}')
+            else:
+                return None
+        if what_to_get == 'name':
+            what_to_get_really = 'city'
+        elif what_to_get == 'id':
+            what_to_get_really = 'city_id'
+        if isinstance(input_value, int) or input_value.isnumeric():
+            if int(input_value) not in city_hierarchy['city_id'].unique():
+                if raise_errors:
+                    raise ValueError(f'id={input_value} is given for {type_of_input}, but it is out of bounds')
+                else:
+                    return None
+            res = city_hierarchy[city_hierarchy['city_id'] == int(input_value)].iloc[0][what_to_get_really]
+        if input_value in city_hierarchy['city'].unique():
+            res = city_hierarchy[city_hierarchy['city'] == input_value].iloc[0][what_to_get_really]
+        return res
     else:
         if raise_errors:
             raise ValueError(f'Unsupported type_of_input: {type_of_input}')
@@ -233,9 +283,9 @@ def after_request(response) -> Response:
 
 @app.route('/api/reload_data/', methods=['POST'])
 def reload_data() -> Response:
-    global city_name
+    global default_city
     if 'city' in request.args:
-        city_name = request.args['city']
+        default_city = request.args['city']
     update_global_data()
     return make_response('OK\n')
 
@@ -352,10 +402,13 @@ def list_city_functions() -> Response:
     }))
 
 def get_service_types(social_group: Optional[Union[str, int]] = None, living_situation: Optional[Union[str, int]] = None,
-        to_list: bool = False) -> Union[List[str], pd.DataFrame]:
+        city_name: str = default_city, to_list: bool = False) -> Union[List[str], pd.DataFrame]:
+    if city_name not in cities_service_types:
+        return [] if to_list else pd.DataFrame(columns = tuple(needs.columns) + ('count',))
     social_group = get_parameter_of_request(social_group, 'social_group', 'name')
     living_situation = get_parameter_of_request(living_situation, 'living_situation', 'name')
     res = needs[(needs['significance'] > 0) & (needs['intensity'] > 0) & needs['service_type'].isin(infrastructure['service_type'].dropna().unique())]
+    res = res[res['service_type'].isin(cities_service_types[city_name])]
     if social_group is None:
         res = res.drop(['social_group', 'significance'], axis=1)
     else:
@@ -367,12 +420,14 @@ def get_service_types(social_group: Optional[Union[str, int]] = None, living_sit
     if to_list:
         return list(res['service_type'].unique())
     else:
-        return res.drop_duplicates()
+        res = res.drop_duplicates().join(pd.Series([cities_service_types[city_name][service_type] for service_type in res['service_type']], name='count'))
+        return res
 
 @app.route('/api/relevance/service_types', methods=['GET'])
 @app.route('/api/relevance/service_types/', methods=['GET'])
 def relevant_service_types() -> Response:
-    res: pd.DataFrame = get_service_types(request.args.get('social_group'), request.args.get('living_situation'))
+    city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
+    res: pd.DataFrame = get_service_types(request.args.get('social_group'), request.args.get('living_situation'), city_name)
     res = res.merge(listings.service_types.set_index('name'), how='inner', left_on='service_type', right_index=True)
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
@@ -388,7 +443,8 @@ def relevant_service_types() -> Response:
 @app.route('/api/list/service_types', methods=['GET'])
 @app.route('/api/list/service_types/', methods=['GET'])
 def list_service_types() -> Response:
-    res: List[str] = sorted(get_service_types(request.args.get('social_group'), request.args.get('living_situation'), to_list=True))
+    city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
+    res: List[str] = sorted(get_service_types(request.args.get('social_group'), request.args.get('living_situation'), city_name, to_list=True))
     ids = list(listings.service_types.set_index('name').loc[list(res)]['id'])
     codes = list(listings.service_types.set_index('name').loc[list(res)]['code'])
     return make_response(jsonify({
@@ -494,7 +550,8 @@ def list_infrastructures() -> Response:
 @app.route('/api/list/districts', methods=['GET'])
 @app.route('/api/list/districts/', methods=['GET'])
 def list_districts() -> Response:
-    districts = city_hierarchy[['district_id', 'district']].dropna().drop_duplicates().sort_values('district')
+    city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
+    districts = city_hierarchy[city_hierarchy['city'] == city_name][['district_id', 'district']].dropna().drop_duplicates().sort_values('district')
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
@@ -506,7 +563,8 @@ def list_districts() -> Response:
 @app.route('/api/list/municipalities', methods=['GET'])
 @app.route('/api/list/municipalities/', methods=['GET'])
 def list_municipalities() -> Response:
-    municipalities = city_hierarchy[['municipality_id', 'municipality']].dropna().drop_duplicates().sort_values('municipality')
+    city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
+    municipalities = city_hierarchy[city_hierarchy['city'] == city_name][['municipality_id', 'municipality']].dropna().drop_duplicates().sort_values('municipality')
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
@@ -518,7 +576,9 @@ def list_municipalities() -> Response:
 @app.route('/api/list/city_hierarchy', methods=['GET'])
 @app.route('/api/list/city_hierarchy/', methods=['GET'])
 def list_city_hierarchy() -> Response:
-    local_hierarchy = city_hierarchy
+    city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
+    local_hierarchy = city_hierarchy[city_hierarchy['city'] == city_name]
+    blocks_local = blocks[blocks['city'] == city_name]
     if 'location' in request.args:
         if request.args['location'] in city_hierarchy['district'].unique():
             local_hierarchy = local_hierarchy[local_hierarchy['district'] == request.args['location']]
@@ -529,26 +589,65 @@ def list_city_hierarchy() -> Response:
         else:
             return make_response(jsonify({'error': f"location '{request.args['location']}' is not found in any of districts, municipalities or blocks"}), 400)
     
-    districts = [{'id': id, 'name': name, 'population': population}
-            for _, (id, name, population) in
-                    local_hierarchy[['district_id', 'district', 'district_population']].dropna().drop_duplicates().iterrows()]
-    for district in districts:
-        district['municipalities'] = [{'id': id, 'name': name, 'population': population}
+    if city_name in city_division_type and city_division_type[city_name] == 'ADMIN_UNIT_PARENT':
+        districts = [{'id': id, 'name': name, 'population': population}
                 for _, (id, name, population) in
-                        local_hierarchy[local_hierarchy['district_id'] == district['id']][['municipality_id', 'municipality',
-                                'municipality_population']].iterrows()]
-    municipalities = [{'id': id, 'name': name, 'population': population}
-            for _, (id, name, population) in
-                    local_hierarchy[local_hierarchy['district_id'].isna()] \
-                            [['municipality_id', 'municipality', 'municipality_population']].dropna().drop_duplicates().iterrows()]
-    if 'include_blocks' in request.args:
+                        local_hierarchy[['district_id', 'district', 'district_population']].dropna().drop_duplicates().iterrows()]
         for district in districts:
-            for municipality in district['municipalities']:
+            district['municipalities'] = [{'id': id, 'name': name, 'population': population}
+                    for _, (id, name, population) in
+                            local_hierarchy[local_hierarchy['district_id'] == district['id']][['municipality_id', 'municipality',
+                                    'municipality_population']].iterrows()]
+        municipalities = [{'id': id, 'name': name, 'population': population}
+                for _, (id, name, population) in
+                        local_hierarchy[local_hierarchy['district_id'].isna()] \
+                                [['municipality_id', 'municipality', 'municipality_population']].dropna().drop_duplicates().iterrows()]
+        if 'include_blocks' in request.args:
+            for district in districts:
+                for municipality in district['municipalities']:
+                    municipality['blocks'] = [{'id': id, 'population': population} for id, population in
+                            blocks_local[blocks_local['municipality'] == municipality['name']]['population'].items()]
+            for municipality in municipalities:
                 municipality['blocks'] = [{'id': id, 'population': population} for id, population in
-                        blocks[blocks['municipality'] == municipality['name']]['population'].items()]
+                        blocks_local[blocks_local['municipality'] == municipality['name']]['population'].items()]
+    elif city_name in city_division_type and city_division_type[city_name] == 'MUNICIPALITY_PARENT':
+        municipalities = [{'id': id, 'name': name, 'population': population}
+                for _, (id, name, population) in
+                        local_hierarchy[['municipality_id', 'municipality', 'municipality_population']].dropna().drop_duplicates().iterrows()]
         for municipality in municipalities:
-            municipality['blocks'] = [{'id': id, 'population': population} for id, population in
-                    blocks[blocks['municipality'] == municipality['name']]['population'].items()]
+            municipality['districts'] = [{'id': id, 'name': name, 'population': population}
+                    for _, (id, name, population) in
+                            local_hierarchy[local_hierarchy['municipality_id'] == municipality['id']][['district_id', 'district',
+                                    'district_population']].iterrows()]
+        districts = [{'id': id, 'name': name, 'population': population}
+                for _, (id, name, population) in
+                        local_hierarchy[local_hierarchy['municipality_id'].isna()] \
+                                [['district_id', 'district', 'district_population']].dropna().drop_duplicates().iterrows()]
+        if 'include_blocks' in request.args:
+            for municipality in municipalities:
+                for district in municipality['districts']:
+                    district['blocks'] = [{'id': id, 'population': population} for id, population in
+                            blocks_local[blocks_local['district'] == district['name']]['population'].items()]
+            for district in districts:
+                district['blocks'] = [{'id': id, 'population': population} for id, population in
+                        blocks_local[blocks_local['district'] == district['name']]['population'].items()]
+    else:
+        districts = [{'id': id, 'name': name, 'population': population}
+                for _, (id, name, population) in
+                        local_hierarchy[local_hierarchy['municipality_id'].isna()] \
+                                [['district_id', 'district', 'district_population']].dropna().drop_duplicates().iterrows()]
+        municipalities = [{'id': id, 'name': name, 'population': population}
+                for _, (id, name, population) in
+                        local_hierarchy[local_hierarchy['district_id'].isna()] \
+                                [['municipality_id', 'municipality', 'municipality_population']].dropna().drop_duplicates().iterrows()]
+        if 'include_blocks' in request.args:
+            for municipality in municipalities:
+                municipality['blocks'] = [{'id': id, 'population': population} for id, population in
+                        blocks_local[blocks_local['municipality'] == municipality['name']]['population'].items()]
+            for district in districts:
+                district['blocks'] = [{'id': id, 'population': population} for id, population in
+                        blocks_local[blocks_local['district'] == district['name']]['population'].items()]
+
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
@@ -565,7 +664,7 @@ def list_city_hierarchy() -> Response:
 @app.route('/api/', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2021-11-29',
+        'version': '2021-12-06',
         '_links': {
             'self': {
                 'href': request.path
@@ -583,11 +682,11 @@ def api_help() -> Response:
                 'templated': True
             },
             'list-service_types': {
-                'href': '/api/list/service_types/{?social_group,living_situation}',
+                'href': '/api/list/service_types/{?city,social_group,living_situation}',
                 'templated': True
             },
             'list-city_hierarchy' :{
-                'href': '/api/list/city_hierarchy/{?include_blocks,location}',
+                'href': '/api/list/city_hierarchy/{?city,include_blocks,location}',
                 'templated': True
             },
             'relevant-social_groups': {
@@ -603,27 +702,30 @@ def api_help() -> Response:
                 'templated': True
             },
             'relevant-service_types': {
-                'href': '/api/relevance/service_types/{?social_group,living_situation}',
+                'href': '/api/relevance/service_types/{?city,social_group,living_situation}',
                 'templated': True
             },
             'list-infrastructures': {
                 'href': '/api/list/infrastructures/'
             },
             'list-districts': {
-                'href': '/api/list/districts/'
+                'href': '/api/list/districts/{?city}',
+                'templated': True
             },
             'list-municipalities': {
-                'href': '/api/list/municipalities/'
+                'href': '/api/list/municipalities/{?city}',
+                'templated': True
             },
             'provision_v3_ready': {
-                'href': '/api/provision_v3/ready/{?service_type,include_evaluation_scale}',
+                'href': '/api/provision_v3/ready/{?city,service_type,include_evaluation_scale}',
                 'templated': True
             },
             'provision_v3_not_ready': {
-                'href': '/api/provision_v3/not_ready/'
+                'href': '/api/provision_v3/not_ready/{?city}',
+                'templated': True
             },
             'provision_v3_services': {
-                'href': '/api/provision_v3/services/{?service_type,location}',
+                'href': '/api/provision_v3/services/{?city,service_type,location}',
                 'templated': True
             },
             'provision_v3_service': {
@@ -631,7 +733,7 @@ def api_help() -> Response:
                 'templated': True
             },
             'provision_v3_houses' : {
-                'href': '/api/provision_v3/houses/{?service_type,location,everything}',
+                'href': '/api/provision_v3/houses/{?city,service_type,location,everything}',
                 'templated': True
             },
             'provision_v3_house_service_types' : {
@@ -655,17 +757,17 @@ def api_help() -> Response:
             },
             'provision_v3_prosperity_districts': {
                 'href': '/api/provision_v3/prosperity/districts/'
-                        '{?district,municipality,block,service_type,city_function,infrastructure,social_group,provision_only}',
+                        '{?city,district,municipality,block,service_type,city_function,infrastructure,social_group,provision_only}',
                 'templated': True
             },
             'provision_v3_prosperity_municipalities': {
                 'href': '/api/provision_v3/prosperity/municipalities/'
-                        '{?district,municipality,block,service_type,city_function,infrastructure,social_group,provision_only}',
+                        '{?city,district,municipality,block,service_type,city_function,infrastructure,social_group,provision_only}',
                 'templated': True
             },
             'provision_v3_prosperity_blocks': {
                 'href': '/api/provision_v3/prosperity/blocks/'
-                        '{?district,municipality,block,service_type,city_function,infrastructure,social_group,provision_only}',
+                        '{?city,district,municipality,block,service_type,city_function,infrastructure,social_group,provision_only}',
                 'templated': True
             }
         }
@@ -674,20 +776,23 @@ def api_help() -> Response:
 @app.route('/api/provision_v3/services', methods=['GET'])
 @app.route('/api/provision_v3/services/', methods=['GET'])
 def provision_v3_services() -> Response:
+    city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
     service_type = request.args.get('service_type')
     if service_type and service_type.isnumeric():
         service_type = infrastructure[infrastructure['service_type_id'] == int(service_type)]['service_type'].iloc[0] \
                 if int(service_type) in infrastructure['service_type_id'] else f'{service_type} (not found)'
     location = request.args.get('location')
-    with houses_properties.conn.cursor() as cur:
+    with houses_properties.conn, houses_properties.conn.cursor() as cur:
         cur.execute('SELECT ST_AsGeoJSON(a.center), a.city_service_type, a.service_name, a.administrative_unit, a.municipality, a.block_id, a.address,'
                 '    ps.houses_in_radius, ps.people_in_radius, ps.service_load, ps.needed_capacity, ps.reserve_resource, ps.evaluation,'
                 '    ps.service_id'
-                ' FROM all_services a JOIN provision.services ps ON a.functional_object_id = ps.service_id' + 
-                (' WHERE a.city_service_type = %s' if 'service_type' in request.args else ''), ((service_type,) if 'service_type' in request.args else ()))
+                ' FROM all_services a JOIN provision.services ps ON a.functional_object_id = ps.service_id' 
+                ' WHERE a.city = %s' +
+                (' AND a.city_service_type = %s' if 'service_type' in request.args else ''),
+                ((city_name, service_type) if 'service_type' in request.args else (city_name,)))
         df = pd.DataFrame(cur.fetchall(), columns=('center', 'service_type', 'service_name', 'district', 'municipality', 'block', 'address',
                 'houses_in_access', 'people_in_access', 'service_load', 'needed_capacity', 'reserve_resource', 'provision', 'service_id'))
-                # TODO: 'provision' -> 'evaluation
+                # TODO: 'provision' -> 'evaluation'
     df['center'] = df['center'].apply(json.loads)
     df['block'] = df['block'].replace({np.nan: None})
     df['address'] = df['address'].replace({np.nan: None})
@@ -720,7 +825,7 @@ def provision_v3_services() -> Response:
 @app.route('/api/provision_v3/service/<int:service_id>/', methods=['GET'])
 def provision_v3_service_info(service_id: int) -> Response:
     service_info = dict()
-    with houses_properties.conn.cursor() as cur:
+    with houses_properties.conn, houses_properties.conn.cursor() as cur:
         cur.execute('SELECT ST_AsGeoJSON(a.center), a.city_service_type, a.service_name, a.administrative_unit, a.municipality, a.block_id, a.address,'
                 '    v.houses_in_radius, v.people_in_radius, v.service_load, v.needed_capacity, v.reserve_resource, v.evaluation as provision'
                 ' FROM all_services a'
@@ -757,7 +862,7 @@ def provision_v3_service_info(service_id: int) -> Response:
 def service_availability_zone(service_id: int) -> Response:
     error: Optional[str] = None
     status = 200
-    with houses_properties.conn.cursor() as cur:
+    with houses_properties.conn, houses_properties.conn.cursor() as cur:
         cur.execute('SELECT ST_X(center), ST_Y(center), city_service_type_id, city_service_type FROM all_services WHERE functional_object_id = %s', (service_id,))
         res = cur.fetchone()
         if res is None:
@@ -773,7 +878,7 @@ def service_availability_zone(service_id: int) -> Response:
             else:
                 radius, transport = res
                 if transport is None:
-                    cur.execute('SELECT ST_AsGeoJSON(ST_Buffer(ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s), 6)', (lng, lat, radius))
+                    cur.execute('SELECT ST_AsGeoJSON(ST_Buffer(ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s), 6)', (lat, lng, radius))
                     geometry = json.loads(cur.fetchone()[0])
                 else:
                     try:
@@ -814,7 +919,7 @@ def house_availability_zone(house_id: int) -> Response:
         status = 404
     else:
         service_type_id = get_parameter_of_request(request.args['service_type'], 'service_type', 'id')
-        with houses_properties.conn.cursor() as cur:
+        with houses_properties.conn, houses_properties.conn.cursor() as cur:
             cur.execute('SELECT ST_X(center), ST_Y(center) FROM houses WHERE functional_object_id = %s', (house_id,))
             res = cur.fetchone()
             if res is None:
@@ -830,7 +935,7 @@ def house_availability_zone(house_id: int) -> Response:
                 else:
                     radius, transport = res
                     if transport is None:
-                        cur.execute('SELECT ST_AsGeoJSON(ST_Buffer(ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s), 6)', (lng, lat, radius))
+                        cur.execute('SELECT ST_AsGeoJSON(ST_Buffer(ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s), 6)', (lat, lng, radius))
                         geometry = json.loads(cur.fetchone()[0])
                     else:
                         try:
@@ -865,6 +970,7 @@ def house_availability_zone(house_id: int) -> Response:
 @app.route('/api/provision_v3/houses', methods=['GET'])
 @app.route('/api/provision_v3/houses/', methods=['GET'])
 def provision_v3_houses() -> Response:
+    city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
     service_type = get_parameter_of_request(request.args.get('service_type'), 'service_type', 'id')
     location = request.args.get('location')
     location_tuple: Optional[Tuple[Literal['district', 'municipality'], int]] = None
@@ -872,11 +978,11 @@ def provision_v3_houses() -> Response:
     if social_group:
         if social_group == 'mean':
             significances = {service_type: needs[needs['service_type'] == service_type]['significance'].mean() for \
-                    service_type in get_service_types(to_list=True)}
+                    service_type in get_service_types(city_name=city_name, to_list=True)}
         else:
             social_group = get_parameter_of_request(social_group, 'social_group', 'name') # type: ignore
             significances = {service_type: needs[(needs['service_type'] == service_type) & (needs['social_group'] == social_group)]['significance'].mean() \
-                    for service_type in get_service_types(to_list=True)}
+                    for service_type in get_service_types(city_name=city_name, to_list=True)}
             significances = {key: val for key, val in filter(lambda x: x[1] == x[1], significances.items())}
     if location is not None:
         if location in city_hierarchy['district'].unique():
@@ -897,14 +1003,15 @@ def provision_v3_houses() -> Response:
                 'error': "at least one of the 'service_type' and 'location' must be set in request. To avoid this error use ?everything parameter"
             }
         }), 400)
-    with houses_properties.conn.cursor() as cur:
+    with houses_properties.conn, houses_properties.conn.cursor() as cur:
         cur.execute('SELECT h.functional_object_id, h.address, ST_AsGeoJSON(h.center), h.resident_number,'
-                '   h.administrative_unit, h.municipality, h.block_id FROM houses h' +
-                (' WHERE' if location_tuple or service_type else '') +
+                '   h.administrative_unit, h.municipality, h.block_id FROM houses h'
+                ' WHERE h.city_id = (SELECT id FROM cities WHERE name = %s)' +
+                (' AND' if location_tuple else '') +
                 (' h.administrative_unit_id = %s ' if location_tuple and location_tuple[0] == 'district' else ' h.municipality_id = %s' \
                         if location_tuple and location_tuple[0] == 'municipality' else '') +
                 ' ORDER BY 1',
-                (location_tuple[1],) if location_tuple else tuple()
+                (city_name, location_tuple[1]) if location_tuple else (city_name,)
         )
         houses = pd.DataFrame(cur.fetchall(),
                 columns=('id', 'address', 'center', 'population', 'district', 'municipality', 'block')).set_index('id') # 'service_type', 'reserve_resource', 'provision'
@@ -943,7 +1050,7 @@ def provision_v3_houses() -> Response:
     return make_response(jsonify({
         '_links': {
             'self': {'href': request.path},
-            'services': {'href': '/api/provision_v3/house_services/{house_id}/{?service_type}', 'templated': True},
+            'services': {'href': '/api/provision_v3/house/{house_id}/services/{?service_type}', 'templated': True},
             'house_info': {'href': '/api/provision_v3/house/{house_id}/{?service_type,social_group}', 'templated': True}
         },
         '_embedded': {
@@ -961,17 +1068,21 @@ def provision_v3_houses() -> Response:
 def provision_v3_house(house_id: int) -> Response:
     service_type = get_parameter_of_request(request.args.get('service_type'), 'service_type', 'id')
     social_group: Optional[str] = request.args.get('social_group')
-    if social_group:
-        if social_group == 'mean':
-            significances = {service_type: needs[needs['service_type'] == service_type]['significance'].mean() for \
-                    service_type in get_service_types(to_list=True)}
-        else:
-            social_group = get_parameter_of_request(social_group, 'social_group', 'name') # type: ignore
-            significances = {service_type: needs[(needs['service_type'] == service_type) & (needs['social_group'] == social_group)]['significance'].mean() \
-                    for service_type in get_service_types(to_list=True)}
-            significances = {key: val for key, val in filter(lambda x: x[1] == x[1], significances.items())}
     house_info: Dict[str, Any] = dict()
-    with houses_properties.conn.cursor() as cur:
+    with houses_properties.conn, houses_properties.conn.cursor() as cur:
+        cur.execute('SELECT city FROM houses WHERE house_id = %s', (house_id,))
+        city_name = cur.fetchone()
+        if city_name is not None:
+            city_name = city_name[0]
+        if social_group:
+            if social_group == 'mean':
+                significances = {service_type: needs[needs['service_type'] == service_type]['significance'].mean() for \
+                        service_type in get_service_types(city_name=city_name, to_list=True)}
+            else:
+                social_group = get_parameter_of_request(social_group, 'social_group', 'name') # type: ignore
+                significances = {service_type: needs[(needs['service_type'] == service_type) & (needs['social_group'] == social_group)]['significance'].mean() \
+                        for service_type in get_service_types(city_name=city_name, to_list=True)}
+                significances = {key: val for key, val in filter(lambda x: x[1] == x[1], significances.items())}
         cur.execute('SELECT address, ST_AsGeoJSON(center), administrative_unit, municipality, block_id, resident_number FROM houses'
                 ' WHERE functional_object_id = %s',
                 (house_id,))
@@ -982,7 +1093,7 @@ def provision_v3_house(house_id: int) -> Response:
         else:
             house_info['address'], house_info['center'], house_info['district'], house_info['municipality'], house_info['block'], house_info['population'] = res
             house_info['center'] = json.loads(house_info['center'])
-            house_info['block'] = int(house_info['block']) if house_info['block'] == house_info['block'] else None
+            house_info['block'] = int(house_info['block']) if house_info['block'] is not None else None
             cur.execute('SELECT st.name, ph.reserve_resource, ph.provision FROM provision.houses ph'
                     '   JOIN city_service_types st ON ph.city_service_type_id = st.id' + 
                     ' WHERE ph.house_id  = %s' + 
@@ -1022,7 +1133,7 @@ def provision_v3_house(house_id: int) -> Response:
 @app.route('/api/provision_v3/house/<int:house_id>/services/', methods=['GET'])
 def house_services(house_id: int) -> Response:
     service_type = get_parameter_of_request(request.args.get('service_type'), 'service_type', 'name')
-    with houses_properties.conn.cursor() as cur:
+    with houses_properties.conn, houses_properties.conn.cursor() as cur:
         if 'service_type' in request.args:
             cur.execute('SELECT hs.service_id, a.service_name, ST_AsGeoJSON(a.center), hs.load,'
                     '      (SELECT sum(load) FROM provision.houses_services WHERE service_id = hs.service_id) FROM provision.houses_services hs'
@@ -1052,7 +1163,7 @@ def house_services(house_id: int) -> Response:
 @app.route('/api/provision_v3/service/<int:service_id>/houses', methods=['GET'])
 @app.route('/api/provision_v3/service/<int:service_id>/houses/', methods=['GET'])
 def service_houses(service_id: int) -> Response:
-    with houses_properties.conn.cursor() as cur:
+    with houses_properties.conn, houses_properties.conn.cursor() as cur:
         cur.execute('SELECT normative FROM provision.normatives'
                 ' WHERE city_service_type_id = (SELECT city_service_type_id FROM all_services WHERE functional_object_id = %s)', (service_id,))
         res = cur.fetchone()
@@ -1075,17 +1186,20 @@ def service_houses(service_id: int) -> Response:
 @app.route('/api/provision_v3/ready', methods=['GET'])
 @app.route('/api/provision_v3/ready/', methods=['GET'])
 def provision_v3_ready() -> Response:
-    with houses_properties.conn.cursor() as cur:
-        cur.execute('SELECT c.city_service_type, c.count, n.normative, n.max_load, n.radius_meters, '
+    with houses_properties.conn, houses_properties.conn.cursor() as cur:
+        city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
+        cur.execute('SELECT (SELECT name FROM city_service_types WHERE id = n.city_service_type_id),'
+                '   c.count, n.normative, n.max_load, n.radius_meters,'
                 '   n.public_transport_time, n.service_evaluation, n.house_evaluation'
-                ' FROM (SELECT a.city_service_type_id, a.city_service_type, count(*) FROM all_services a'
+                ' FROM (SELECT a.city_service_type_id, count(*) FROM all_services a'
                 '           JOIN provision.services ps ON a.functional_object_id = ps.service_id'
                 '       WHERE city = %s'
-                '       GROUP BY a.city_service_type_id, a.city_service_type) as c'
-                '   LEFT JOIN provision.normatives n ON n.city_service_type_id = c.city_service_type_id',
+                '       GROUP BY a.city_service_type_id) as c'
+                '   RIGHT JOIN provision.normatives n ON n.city_service_type_id = c.city_service_type_id',
                 (city_name,))
         df = pd.DataFrame(cur.fetchall(), columns=('service_type', 'count', 'normative', 'max_load', 'radius_meters',
                 'public_transport_time', 'service_evaluation', 'house_evaluation'))
+        df['count'] = df['count'].fillna(0)
         if not 'include_evaluation_scale' in request.args:
             df = df.drop(['service_evaluation', 'house_evaluation'], axis=1)
         if 'service_type' in request.args:
@@ -1100,7 +1214,8 @@ def provision_v3_ready() -> Response:
 @app.route('/api/provision_v3/not_ready', methods=['GET'])
 @app.route('/api/provision_v3/not_ready/', methods=['GET'])
 def provision_v3_not_ready() -> Response:
-    with houses_properties.conn.cursor() as cur:
+    with houses_properties.conn, houses_properties.conn.cursor() as cur:
+        city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
         cur.execute('SELECT st.name as service_type, s.count AS unevaluated, c.count AS total'
                 ' FROM (SELECT city_service_type_id, count(*) FROM all_services WHERE functional_object_id NOT IN'
                 '       (SELECT service_id FROM provision.services) AND city = %s'
@@ -1137,6 +1252,7 @@ def provision_v3_prosperity(location_type: str) -> Response:
     city_function: Optional[str] = request.args.get('city_function')
     if city_function and city_function not in ('all', 'mean'):
         city_function = get_parameter_of_request(city_function, 'city_function', 'name') # type: ignore
+    city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
     infra: Optional[str] = request.args.get('infrastructure')
     if infra and infra not in ('all', 'mean'):
         infra = get_parameter_of_request(infra, 'infrastructure', 'name') # type: ignore
@@ -1180,19 +1296,19 @@ def provision_v3_prosperity(location_type: str) -> Response:
     location_type_single = 'district' if location_type == 'districts' else 'municipality' if location_type == 'municipalities' else 'block'
 
     if location_type == 'districts':
-        res = provision_administrative_units
+        res = provision_administrative_units[city_name]
         if municipality == 'mean':
             municipality = None
         if block == 'mean':
             block = None
     elif location_type == 'municipalities':
-        res = provision_municipalities
+        res = provision_municipalities[city_name]
         if district == 'all' or district == 'mean':
             district = None
         if block == 'mean':
             block = None
     else:
-        res = provision_blocks
+        res = provision_blocks[city_name]
         if district == 'all' or district == 'mean':
             district = None
         if municipality == 'all' or municipality == 'mean':
@@ -1351,8 +1467,8 @@ if __name__ == '__main__':
 
     if 'PROVISION_API_PORT' in os.environ:
         houses_properties.api_port = int(os.environ['PROVISION_API_PORT'])
-    if 'PROVISION_CITY_NAME' in os.environ:
-        city_name = os.environ['PROVISION_CITY_NAME']
+    if 'PROVISION_DEFAULT_CITY' in os.environ:
+        default_city = os.environ['PROVISION_DEFAULT_CITY']
     if 'PUBLIC_TRANSPORT_ENDPOINT' in os.environ:
         public_transport_endpoint = os.environ['PUBLIC_TRANSPORT_ENDPOINT']
     if 'PERSONAL_TRANSPORT_ENDPOINT' in os.environ:
@@ -1403,7 +1519,7 @@ if __name__ == '__main__':
                         help=f'postgres user name for the provision database [default: {provision_properties.db_user}]', type=str)
     parser.add_argument('-pW', '--provision_db_pass', action='store', dest='provision_db_pass',
                         help=f'database user password for the provision database [default: {provision_properties.db_pass}]', type=str)
-    parser.add_argument('-c', '--city_name', action='store', dest='city_name', help=f'city name [default: {city_name}]', type=str)
+    parser.add_argument('-c', '--default_city', action='store', dest='default_city', help=f'city name [default: {default_city}]', type=str)
     parser.add_argument('-pubT', '--public_transport_endpoint', action='store', dest='public_transport_endpoint',
                         help=f'endpoint for getting public transport polygons [default: {public_transport_endpoint}]', type=str)
     parser.add_argument('-perT', '--personal_transport_endpoint', action='store', dest='personal_transport_endpoint',
@@ -1435,8 +1551,8 @@ if __name__ == '__main__':
         provision_properties.db_user = args.provision_db_user
     if args.provision_db_pass is not None:
         provision_properties.db_pass = args.provision_db_pass
-    if args.city_name is not None:
-        city_name = args.city_name
+    if args.default_city is not None:
+        default_city = args.default_city
     if args.public_transport_endpoint is not None:
         public_transport_endpoint = args.public_transport_endpoint
     if args.personal_transport_endpoint is not None:

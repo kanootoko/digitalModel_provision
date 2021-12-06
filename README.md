@@ -35,7 +35,7 @@ Parameters can be configured with environment variables:
 * PROVISION_DB_NAME - provision_db_name - name of the postgres database with provision [default: _provision_] (string)
 * PROVISION_DB_USER - provision_db_user - user name for database with provision [default: _postgres_] (string)
 * PROVISION_DB_PASS - provision_db_pass - user password for database with provision [default: _postgres_] (string)
-* PROVISION_CITY_NAME - city_name - name of a city to work with
+* PROVISION_DEFAULT_CITY - default_city - name of a city to work with by default
 
 ## Configuration by CLI Parameters
 
@@ -53,15 +53,15 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -pU,--provision_db_user \<str\> - provision_db_user
 * -pW,--provision_db_pass \<str\> - provision_db_pass
 * -D,--debug - launch in debug mode (available only by CLI)
-* -C,--city_name \<str\> - city_name
+* -C,--default_city \<str\> - default_city
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-11-29)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2021-12-06)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-11-29 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2021-12-06 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-11-29`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-11-29`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2021-12-06`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2021-12-06`  
       Ensure that:
         1. _/etc/postgresql/\<version\>/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/\<version\>/main/pg\_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
