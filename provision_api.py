@@ -193,8 +193,8 @@ def update_global_data() -> None:
 
         cur.execute('SELECT id, name, code FROM city_functions ORDER BY name')
         city_functions = pd.DataFrame(cur.fetchall(), columns=('id', 'name', 'code'))
-        cur.execute('SELECT id, name, code FROM living_situations ORDER BY name')
-        living_situations = pd.DataFrame(cur.fetchall(), columns=('id', 'name', 'code'))
+        cur.execute('SELECT id, name FROM living_situations ORDER BY name')
+        living_situations = pd.DataFrame(cur.fetchall(), columns=('id', 'name'))
         cur.execute('SELECT id, name, code FROM social_groups ORDER BY name')
         social_groups = pd.DataFrame(cur.fetchall(), columns=('id', 'name', 'code'))
         cur.execute('SELECT id, name, code FROM city_infrastructure_types ORDER BY name')
@@ -213,6 +213,7 @@ def get_parameter_of_request(
     if input_value is None:
         return None
     if type_of_input in ('service_type', 'city_function', 'infrastructure', 'social_group', 'living_situation'):
+        assert not (type_of_input == 'living_situations' and what_to_get == 'code'), 'living_situations does not have code anymore'
         if what_to_get not in ('name', 'code', 'id'):
             if raise_errors:
                 raise ValueError(f'"{what_to_get}" could not be get from {type_of_input}')
@@ -230,8 +231,9 @@ def get_parameter_of_request(
             res = source[source['id'] == int(input_value)].iloc[0][what_to_get]
         if input_value in source['name'].unique():
             res = source[source['name'] == input_value].iloc[0][what_to_get]
-        if input_value in source['code'].unique():
-            res = source[source['code'] == input_value].iloc[0][what_to_get]
+        if 'code' in source.columns:
+            if input_value in source['code'].unique():
+                res = source[source['code'] == input_value].iloc[0][what_to_get]
         if res is not None:
             if what_to_get == 'id':
                 return int(res)
@@ -505,7 +507,6 @@ def relevant_living_situations() -> Response:
 def list_living_situations() -> Response:
     res: List[str] = get_living_situations(request.args.get('social_group'), request.args.get('service_type'), to_list=True)
     ids = list(listings.living_situations.set_index('name').loc[list(res)]['id'])
-    codes = list(listings.living_situations.set_index('name').loc[list(res)]['code'])
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
         '_embedded': {
@@ -515,7 +516,6 @@ def list_living_situations() -> Response:
             },
             'living_situations': res,
             'living_situations_ids': ids,
-            'living_situations_codes': codes
         }
     }))
 
@@ -664,7 +664,7 @@ def list_city_hierarchy() -> Response:
 @app.route('/api/', methods=['GET'])
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2021-12-06',
+        'version': '2021-12-28',
         '_links': {
             'self': {
                 'href': request.path
@@ -1070,7 +1070,7 @@ def provision_v3_house(house_id: int) -> Response:
     social_group: Optional[str] = request.args.get('social_group')
     house_info: Dict[str, Any] = dict()
     with houses_properties.conn, houses_properties.conn.cursor() as cur:
-        cur.execute('SELECT city FROM houses WHERE house_id = %s', (house_id,))
+        cur.execute('SELECT city FROM houses WHERE functional_object_id = %s', (house_id,))
         city_name = cur.fetchone()
         if city_name is not None:
             city_name = city_name[0]
@@ -1457,7 +1457,7 @@ if __name__ == '__main__':
 
     # Default houses_properties settings
 
-    houses_properties = Properties('localhost', 5432, 'city_db_final', 'postgres', 'postgres', 8080)
+    houses_properties = Properties('localhost', 5432, 'city_db_final', 'postgres', 'postgres', 8080) # TODO: move api port to its own variable
     provision_properties = Properties('localhost', 5432, 'provision', 'postgres', 'postgres', 8080)
     public_transport_endpoint = 'http://10.32.1.61:8080/api.v2/isochrones'
     personal_transport_endpoint = 'http://10.32.1.61:8080/api.v2/isochrones'
@@ -1508,7 +1508,7 @@ if __name__ == '__main__':
     parser.add_argument('-hU', '--houses_db_user', action='store', dest='houses_db_user',
                         help=f'postgres user name for the main database [default: {houses_properties.db_user}]', type=str)
     parser.add_argument('-hW', '--houses_db_pass', action='store', dest='houses_db_pass',
-                        help=f'database user password for the main database [default: {provision_properties.db_pass}]', type=str)
+                        help=f'database user password for the main database [default: {houses_properties.db_pass}]', type=str)
     parser.add_argument('-pH', '--provision_db_addr', action='store', dest='provision_db_addr',
                         help=f'postgres host address for the provision database [default: {provision_properties.db_addr}]', type=str)
     parser.add_argument('-pP', '--provision_db_port', action='store', dest='provision_db_port',
