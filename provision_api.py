@@ -6,6 +6,7 @@ import pandas as pd, numpy as np
 import argparse
 import simplejson as json
 import itertools
+import time
 import os
 from typing import Any, Literal, Tuple, List, Dict, Optional, Union, NamedTuple
 
@@ -14,6 +15,25 @@ import logging
 import collect_geometry
 
 log = logging.getLogger(__name__)
+request_log = logging.getLogger(__name__ + " - requests")
+
+def logged(func: 'function'):
+    def wrapper(*args, **nargs):
+        e = {'method': request.method, 'user': request.remote_addr, 'endpoint': request.path, 'handler': func.__name__}
+        request_log.info(f'query_params: {dict(request.args)}', extra=e)
+        start_time = time.time()
+        res: Response = func(*args, **nargs)
+        t = time.time() - start_time
+        if res.status_code != 200:
+            if res.status_code == 500:
+                request_log.error(f'Fail({res.status_code}) - execution took {t * 1000}ms', extra=e)
+            elif 400 < res.status_code < 500:
+                request_log.error(f'Wrong request({res.status_code}) - execution took {t * 1000}ms', extra=e)
+            else:
+                request_log.error(f'Error({res.status_code}) - execution took {t * 1000}ms', extra=e)
+        return res
+    wrapper.__name__ = f'{func.__name__}_wrapper'
+    return wrapper
 
 class NonASCIIJSONEncoder(json.JSONEncoder):
     def __init__(self, **kwargs):
@@ -274,7 +294,7 @@ compress = Compress()
 
 app = Flask(__name__)
 compress.init_app(app)
-app.json_encoder = NonASCIIJSONEncoder
+app.json_encoder = NonASCIIJSONEncoder # type: ignore
 
 @app.after_request
 def after_request(response) -> Response:
@@ -284,6 +304,7 @@ def after_request(response) -> Response:
     return response
 
 @app.route('/api/reload_data/', methods=['POST'])
+@logged
 def reload_data() -> Response:
     global default_city
     if 'city' in request.args:
@@ -315,6 +336,7 @@ def get_social_groups(service_type: Optional[Union[str, int]] = None, living_sit
 
 @app.route('/api/relevance/social_groups', methods=['GET'])
 @app.route('/api/relevance/social_groups/', methods=['GET'])
+@logged
 def relevant_social_groups() -> Response:
     res: pd.DataFrame = get_social_groups(request.args.get('service_type'), request.args.get('living_situation'))
     res = res.merge(listings.social_groups.set_index('name'), how='inner', left_on='social_group', right_index=True)
@@ -331,6 +353,7 @@ def relevant_social_groups() -> Response:
 
 @app.route('/api/list/social_groups', methods=['GET'])
 @app.route('/api/list/social_groups/', methods=['GET'])
+@logged
 def list_social_groups() -> Response:
     res: List[str] = get_social_groups(request.args.get('service_type'), request.args.get('living_situation'), to_list=True)
     ids = list(listings.social_groups.set_index('name').loc[list(res)]['id'])
@@ -370,6 +393,7 @@ def get_city_functions(social_group: Optional[Union[str, int]] = None, living_si
 
 @app.route('/api/relevance/city_functions', methods=['GET'])
 @app.route('/api/relevance/city_functions/', methods=['GET'])
+@logged
 def relevant_city_functions() -> Response:
     res: pd.DataFrame = get_city_functions(request.args.get('social_group'), request.args.get('living_situation'))
     res = res.merge(listings.city_functions.set_index('name'), how='inner', left_on='city_function', right_index=True)
@@ -386,6 +410,7 @@ def relevant_city_functions() -> Response:
 
 @app.route('/api/list/city_functions', methods=['GET'])
 @app.route('/api/list/city_functions/', methods=['GET'])
+@logged
 def list_city_functions() -> Response:
     res: List[str] = sorted(get_city_functions(request.args.get('social_group'), request.args.get('living_situation'), to_list=True))
     ids = list(listings.city_functions.set_index('name').loc[list(res)]['id'])
@@ -427,6 +452,7 @@ def get_service_types(social_group: Optional[Union[str, int]] = None, living_sit
 
 @app.route('/api/relevance/service_types', methods=['GET'])
 @app.route('/api/relevance/service_types/', methods=['GET'])
+@logged
 def relevant_service_types() -> Response:
     city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
     res: pd.DataFrame = get_service_types(request.args.get('social_group'), request.args.get('living_situation'), city_name)
@@ -444,6 +470,7 @@ def relevant_service_types() -> Response:
 
 @app.route('/api/list/service_types', methods=['GET'])
 @app.route('/api/list/service_types/', methods=['GET'])
+@logged
 def list_service_types() -> Response:
     city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
     res: List[str] = sorted(get_service_types(request.args.get('social_group'), request.args.get('living_situation'), city_name, to_list=True))
@@ -482,6 +509,7 @@ def get_living_situations(social_group: Optional[Union[str, int]] = None, servic
 
 @app.route('/api/relevance/living_situations', methods=['GET'])
 @app.route('/api/relevance/living_situations/', methods=['GET'])
+@logged
 def relevant_living_situations() -> Response:
     res: pd.DataFrame = get_living_situations(request.args.get('social_group'), request.args.get('service_type'))
     res = res.merge(listings.living_situations.set_index('name'), how='inner', left_on='living_situation', right_index=True)
@@ -504,6 +532,7 @@ def relevant_living_situations() -> Response:
 
 @app.route('/api/list/living_situations', methods=['GET'])
 @app.route('/api/list/living_situations/', methods=['GET'])
+@logged
 def list_living_situations() -> Response:
     res: List[str] = get_living_situations(request.args.get('social_group'), request.args.get('service_type'), to_list=True)
     ids = list(listings.living_situations.set_index('name').loc[list(res)]['id'])
@@ -521,6 +550,7 @@ def list_living_situations() -> Response:
 
 @app.route('/api/list/infrastructures', methods=['GET'])
 @app.route('/api/list/infrastructures/', methods=['GET'])
+@logged
 def list_infrastructures() -> Response:
     return make_response(jsonify({
         '_links': {'self': {'href': request.path}},
@@ -549,6 +579,7 @@ def list_infrastructures() -> Response:
 
 @app.route('/api/list/districts', methods=['GET'])
 @app.route('/api/list/districts/', methods=['GET'])
+@logged
 def list_districts() -> Response:
     city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
     districts = city_hierarchy[city_hierarchy['city'] == city_name][['district_id', 'district']].dropna().drop_duplicates().sort_values('district')
@@ -562,6 +593,7 @@ def list_districts() -> Response:
 
 @app.route('/api/list/municipalities', methods=['GET'])
 @app.route('/api/list/municipalities/', methods=['GET'])
+@logged
 def list_municipalities() -> Response:
     city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
     municipalities = city_hierarchy[city_hierarchy['city'] == city_name][['municipality_id', 'municipality']].dropna().drop_duplicates().sort_values('municipality')
@@ -575,6 +607,7 @@ def list_municipalities() -> Response:
 
 @app.route('/api/list/city_hierarchy', methods=['GET'])
 @app.route('/api/list/city_hierarchy/', methods=['GET'])
+@logged
 def list_city_hierarchy() -> Response:
     city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
     local_hierarchy = city_hierarchy[city_hierarchy['city'] == city_name]
@@ -662,9 +695,10 @@ def list_city_hierarchy() -> Response:
 
 @app.route('/', methods=['GET'])
 @app.route('/api/', methods=['GET'])
+@logged
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2021-12-28',
+        'version': '2022-02-24',
         '_links': {
             'self': {
                 'href': request.path
@@ -775,6 +809,7 @@ def api_help() -> Response:
 
 @app.route('/api/provision_v3/services', methods=['GET'])
 @app.route('/api/provision_v3/services/', methods=['GET'])
+@logged
 def provision_v3_services() -> Response:
     city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
     service_type = request.args.get('service_type')
@@ -823,6 +858,7 @@ def provision_v3_services() -> Response:
 
 @app.route('/api/provision_v3/service/<int:service_id>', methods=['GET'])
 @app.route('/api/provision_v3/service/<int:service_id>/', methods=['GET'])
+@logged
 def provision_v3_service_info(service_id: int) -> Response:
     service_info = dict()
     with houses_properties.conn, houses_properties.conn.cursor() as cur:
@@ -859,6 +895,7 @@ def provision_v3_service_info(service_id: int) -> Response:
 
 @app.route('/api/provision_v3/service/<int:service_id>/availability_zone', methods=['GET'])
 @app.route('/api/provision_v3/service/<int:service_id>/availability_zone/', methods=['GET'])
+@logged
 def service_availability_zone(service_id: int) -> Response:
     error: Optional[str] = None
     status = 200
@@ -911,6 +948,7 @@ def service_availability_zone(service_id: int) -> Response:
     
 @app.route('/api/provision_v3/house/<int:house_id>/availability_zone', methods=['GET'])
 @app.route('/api/provision_v3/house/<int:house_id>/availability_zone/', methods=['GET'])
+@logged
 def house_availability_zone(house_id: int) -> Response:
     error: Optional[str] = None
     status = 200
@@ -969,6 +1007,7 @@ def house_availability_zone(house_id: int) -> Response:
 
 @app.route('/api/provision_v3/houses', methods=['GET'])
 @app.route('/api/provision_v3/houses/', methods=['GET'])
+@logged
 def provision_v3_houses() -> Response:
     city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
     service_type = get_parameter_of_request(request.args.get('service_type'), 'service_type', 'id')
@@ -1065,6 +1104,7 @@ def provision_v3_houses() -> Response:
 
 @app.route('/api/provision_v3/house/<int:house_id>', methods=['GET'])
 @app.route('/api/provision_v3/house/<int:house_id>/', methods=['GET'])
+@logged
 def provision_v3_house(house_id: int) -> Response:
     service_type = get_parameter_of_request(request.args.get('service_type'), 'service_type', 'id')
     social_group: Optional[str] = request.args.get('social_group')
@@ -1127,10 +1167,9 @@ def provision_v3_house(house_id: int) -> Response:
         }
     }), 404 if house_info['address'] == 'Not found' else 200)
 
-@app.route('/api/provision_v3/house_services/<int:house_id>', methods=['GET'])
-@app.route('/api/provision_v3/house_services/<int:house_id>/', methods=['GET'])
 @app.route('/api/provision_v3/house/<int:house_id>/services', methods=['GET'])
 @app.route('/api/provision_v3/house/<int:house_id>/services/', methods=['GET'])
+@logged
 def house_services(house_id: int) -> Response:
     service_type = get_parameter_of_request(request.args.get('service_type'), 'service_type', 'name')
     with houses_properties.conn, houses_properties.conn.cursor() as cur:
@@ -1158,10 +1197,9 @@ def house_services(house_id: int) -> Response:
         }
     }))
 
-@app.route('/api/provision_v3/service_houses/<int:service_id>', methods=['GET'])
-@app.route('/api/provision_v3/service_houses/<int:service_id>/', methods=['GET'])
 @app.route('/api/provision_v3/service/<int:service_id>/houses', methods=['GET'])
 @app.route('/api/provision_v3/service/<int:service_id>/houses/', methods=['GET'])
+@logged
 def service_houses(service_id: int) -> Response:
     with houses_properties.conn, houses_properties.conn.cursor() as cur:
         cur.execute('SELECT normative FROM provision.normatives'
@@ -1185,6 +1223,7 @@ def service_houses(service_id: int) -> Response:
 
 @app.route('/api/provision_v3/ready', methods=['GET'])
 @app.route('/api/provision_v3/ready/', methods=['GET'])
+@logged
 def provision_v3_ready() -> Response:
     with houses_properties.conn, houses_properties.conn.cursor() as cur:
         city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
@@ -1213,6 +1252,7 @@ def provision_v3_ready() -> Response:
 
 @app.route('/api/provision_v3/not_ready', methods=['GET'])
 @app.route('/api/provision_v3/not_ready/', methods=['GET'])
+@logged
 def provision_v3_not_ready() -> Response:
     with houses_properties.conn, houses_properties.conn.cursor() as cur:
         city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
@@ -1235,6 +1275,7 @@ def provision_v3_not_ready() -> Response:
 
 @app.route('/api/provision_v3/prosperity/<location_type>', methods=['GET'])
 @app.route('/api/provision_v3/prosperity/<location_type>/', methods=['GET'])
+@logged
 def provision_v3_prosperity(location_type: str) -> Response:
     if location_type not in ('districts', 'municipalities', 'blocks'):
         return make_response(jsonify({
@@ -1442,8 +1483,9 @@ def not_found(_):
 @app.errorhandler(Exception)
 def any_error(error: Exception):
     houses_properties.conn.rollback()
-    log.error(f'Error at {request.path}?{"&".join(map(lambda x: f"{x[0]}={x[1]}", request.args.items()))} - {repr(error)}')
-    log.warning('\n'.join(traceback.format_tb(error.__traceback__)))
+    e = {'method': request.method, 'user': request.remote_addr, 'endpoint': request.full_path, 'handler': "error"}
+    request_log.error(f'error {error!r}', extra=e)
+    request_log.warning('Traceback:' + '\n'.join(traceback.format_tb(error.__traceback__)), extra=e)
     return make_response(jsonify({
         'error': str(error),
         'error_type': str(type(error)),
@@ -1462,6 +1504,7 @@ if __name__ == '__main__':
     public_transport_endpoint = 'http://10.32.1.61:8080/api.v2/isochrones'
     personal_transport_endpoint = 'http://10.32.1.61:8080/api.v2/isochrones'
     walking_endpoint = 'http://10.32.1.62:5002/pedastrian_walk/isochrones?x_from={lng}&y_from={lat}&times={t}'
+    mongo_url: Optional[str] = None
 
     # Environment variables
 
@@ -1473,6 +1516,8 @@ if __name__ == '__main__':
         public_transport_endpoint = os.environ['PUBLIC_TRANSPORT_ENDPOINT']
     if 'PERSONAL_TRANSPORT_ENDPOINT' in os.environ:
         personal_transport_endpoint = os.environ['PERSONAL_TRANSPORT_ENDPOINT']
+    if 'PROVISION_MONGO_URL' in os.environ:
+        mongo_url = os.environ['PROVISION_MONGO_URL']
     if 'WALKING_ENDPOINT' in os.environ:
         walking_endpoint = os.environ['WALKING_ENDPOINT']
     if 'HOUSES_DB_ADDR' in os.environ:
@@ -1520,6 +1565,8 @@ if __name__ == '__main__':
     parser.add_argument('-pW', '--provision_db_pass', action='store', dest='provision_db_pass',
                         help=f'database user password for the provision database [default: {provision_properties.db_pass}]', type=str)
     parser.add_argument('-c', '--default_city', action='store', dest='default_city', help=f'city name [default: {default_city}]', type=str)
+    parser.add_argument('-m', '--mongo_url', action='store', dest='mongo_url',
+                        help=f'mongo url for writing logs [no default, no logging to mongo]', type=str, required=False)
     parser.add_argument('-pubT', '--public_transport_endpoint', action='store', dest='public_transport_endpoint',
                         help=f'endpoint for getting public transport polygons [default: {public_transport_endpoint}]', type=str)
     parser.add_argument('-perT', '--personal_transport_endpoint', action='store', dest='personal_transport_endpoint',
@@ -1561,12 +1608,35 @@ if __name__ == '__main__':
         walking_endpoint = args.walking_endpoint
     if args.api_port is not None:
         houses_properties.api_port = args.api_port
+    if args.mongo_url is not None:
+        mongo_url = args.mongo_url
 
     log_handler = logging.StreamHandler()
     log_handler.setFormatter(logging.Formatter(fmt='api [{levelname}] - {asctime}: {message}', datefmt='%Y-%m-%d %H:%M:%S', style='{'))
-    log_handler.setLevel('INFO')
-    log.setLevel('INFO')
+    log_handler.setLevel('INFO' if not args.debug else 'DEBUG')
     log.addHandler(log_handler)
+    log.setLevel('INFO' if not args.debug else 'DEBUG')
+
+    log_handler = logging.StreamHandler()
+    log_handler.setFormatter(logging.Formatter(fmt='api [{levelname}] - {asctime}: {user} {method} {endpoint} ({handler}): {message}',
+            datefmt='%Y-%m-%d %H:%M:%S', style='{'))
+    log_handler.setLevel('INFO' if not args.debug else 'DEBUG')
+    request_log.addHandler(log_handler)
+    request_log.setLevel('INFO' if not args.debug else 'DEBUG')
+
+    if mongo_url is not None:
+        if ':' not in mongo_url or '@' not in mongo_url:
+            public_mongo_url = mongo_url
+        else:
+            public_mongo_url = mongo_url[:mongo_url.find(':')] + mongo_url[mongo_url.find('@'):]
+        try:
+            from mongolog import MongoHandler
+            mongo_handler = MongoHandler(mongo_url, "provision_api")
+            log_handler.setLevel('INFO' if not args.debug else 'DEBUG')
+            request_log.addHandler(mongo_handler)
+            log.info(f'Attached mongo logger at {public_mongo_url}')
+        except Exception as ex:
+            log.error(f'Could not attach required mongo database (url: {public_mongo_url}) for logging: {ex!r}')
     
     log.info('Getting global data')
 
@@ -1576,7 +1646,7 @@ if __name__ == '__main__':
             f' ({houses_properties.db_user}@{houses_properties.db_addr}:{houses_properties.db_port}/{houses_properties.db_name}) and provision DB as'
             f' ({provision_properties.db_user}@{provision_properties.db_addr}:{provision_properties.db_port}/{provision_properties.db_name}).')
 
-    log.info(f'Public_ransport exnpoint is set to "{public_transport_endpoint}", personal_transport endpoint = "{personal_transport_endpoint}",'
+    log.info(f'Public_ransport endpoint is set to "{public_transport_endpoint}", personal_transport endpoint = "{personal_transport_endpoint}",'
             f' walking endpoint = "{walking_endpoint}"')
     collect_geom = collect_geometry.CollectGeometry(provision_properties.conn, public_transport_endpoint, personal_transport_endpoint,
             walking_endpoint, raise_exceptions=True, download_geometry_after_timeout=True)
@@ -1590,5 +1660,5 @@ if __name__ == '__main__':
         try:
             app_server.serve_forever()
         except KeyboardInterrupt:
-            log.info('Finishing the provision_api server')
             app_server.stop()
+    log.info('Finishing the provision_api server')

@@ -13,10 +13,7 @@ import psycopg2
 
 log = logging.getLogger(__name__)
 
-sys.path.append(os.path.abspath('../libs'))
-
-# from ..libs import collect_geometry # type: ignore
-import collect_geometry  # type: ignore
+import collect_geometry
 
 capacity_people = {
     0: 0,
@@ -57,11 +54,11 @@ properties_geometry: Properties
 # generate
 
 def generate_table_2(conn: psycopg2.extensions.connection, geometry_conn: psycopg2.extensions.connection, service_type: str,
-        normative: Dict[str, Any], log_n: int = 50, wait_for_transport_service: bool = True,
-        public_transport_service_endpoint: str = 'http://10.32.1.61:8080/api.v2/isochrones') -> pd.DataFrame:
+        normative: Dict[str, Any], city_id: int, log_n: int = 50, wait_for_transport_service: bool = True,
+        public_transport_service_endpoint: str = 'http://10.32.1.62:5000/mobility_analysis/isochrones?x_from={latitude}&y_from={longitude}&travel_time={time}&travel_type=public_transport') -> pd.DataFrame:
     services: gpd.GeoDataFrame = gpd.GeoDataFrame.from_postgis('SELECT functional_object_id as func_id,'
             ' center, administrative_unit_id as district, municipality_id as municipality, block_id as block, city_service_type, capacity FROM all_services'
-            f" WHERE city_service_type = '{service_type}'"
+            f" WHERE city_service_type = '{service_type}' AND city_id = {city_id}"
             ' ORDER BY city_service_type, district, municipality, block_id, address', conn, 'center')
     frame: List[Tuple[int, str, str, int, str, int, Optional[int], Optional[int], int, int]] = []
     with conn, conn.cursor() as cur:
@@ -85,7 +82,7 @@ def generate_table_2(conn: psycopg2.extensions.connection, geometry_conn: psycop
                     try:
                         transport_polygon = json.dumps(collect_geometry.get_public_transport(service['center'].x, service['center'].y,
                                 normative['public_transport_time'], geometry_conn, public_transport_service_endpoint, 300,
-                                wait_for_transport_service))
+                                wait_for_transport_service, collect_geometry._get_public_transport_alternative_internal))
                         break
                     except TimeoutError:
                         log.error(f'Timed out while trying to fetch transport for ({service["center"].x}, {service["center"].y})'
@@ -96,8 +93,9 @@ def generate_table_2(conn: psycopg2.extensions.connection, geometry_conn: psycop
                     ' FROM houses WHERE ' +
                     ('ST_Within(center, ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326))' if normative['public_transport_time'] else \
                         'ST_Within(center, ST_Buffer(ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)::geometry)') +
+                    '   AND city_id = %s'
                     ' ORDER BY district, municipality, block_id',
-                    ((transport_polygon,) if normative['public_transport_time'] else center_radius))
+                    ((transport_polygon, city_id) if normative['public_transport_time'] else center_radius + (city_id,)))
             houses = pd.DataFrame(cur.fetchall(), columns=('func_id', 'district', 'municipality', 'block', 'population'))
             frame.append((service['func_id'], service['district'], service['municipality'], service['block'],
                     service['city_service_type'], service['capacity'], normative['radius_meters'],
@@ -107,16 +105,17 @@ def generate_table_2(conn: psycopg2.extensions.connection, geometry_conn: psycop
                     'transport', 'houses_available', 'population_available')).set_index('func_id')
 
 def generate_table_1_3(conn: psycopg2.extensions.connection, geometry_conn: psycopg2.extensions.connection,
-        service_type: str, normative: Dict[str, Any], log_n: int = 50, wait_for_transport_service: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        service_type: str, normative: Dict[str, Any], city_id: int, log_n: int = 50,
+        wait_for_transport_service: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame]:
     services: gpd.GeoDataFrame = gpd.GeoDataFrame.from_postgis('SELECT functional_object_id as func_id,'
             ' center, administrative_unit_id as district, municipality_id, block_id as block, city_service_type, capacity FROM all_services'
-            f" WHERE city_service_type = '{service_type}'"
+            f" WHERE city_service_type = '{service_type}' AND city_id = {city_id}"
             ' ORDER BY city_service_type, district, municipality, block_id, address', conn, 'center')
     services = services.reindex()
     frame: List[Tuple[int, str, str, int, int, int, Optional[int], Optional[int]]] = []
     with conn, conn.cursor() as cur:
         cur.execute('SELECT functional_object_id, administrative_unit_id, municipality_id, block_id, resident_number'
-                ' FROM houses ORDER BY 1')
+                ' FROM houses WHERE city_id = %s ORDER BY 1', (city_id,))
         table_1 = pd.DataFrame(cur.fetchall(), columns=('house_id', 'district', 'municipality', 'block', 'population')).set_index('house_id')
 
         provision_base = dict((house_id, 0.0) for house_id in table_1.index)
@@ -152,8 +151,9 @@ def generate_table_1_3(conn: psycopg2.extensions.connection, geometry_conn: psyc
                     '   municipality_id as municipality_name, block_id, resident_number FROM houses'
                     ' WHERE ' +
                     ('ST_Within(center, ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326))' if normative['public_transport_time'] else
-                        'ST_Within(center, ST_Buffer(ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)::geometry)'),
-                    ((transport_polygon,) if normative['public_transport_time'] else center_radius))
+                        'ST_Within(center, ST_Buffer(ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)::geometry)') +
+                    ' AND city_id = %s',
+                    ((transport_polygon, city_id) if normative['public_transport_time'] else center_radius + (city_id,)))
             houses = cur.fetchall()
             for house_id, district, municipality, block, population in houses:
                 provision[house_id] += 1 / len(houses)
@@ -236,14 +236,14 @@ def ensure_tables(conn: psycopg2.extensions.connection):
         cur.execute('CREATE SCHEMA IF NOT EXISTS provision')
 
         cur.execute('CREATE TABlE IF NOT EXISTS provision.normatives ('
-                'city_service_type_id integer PRIMARY KEY REFERENCES city_service_types(id) NOT NULL,'
-                'normative float NOT NULL,'
-                'max_load integer NOT NULL,'
-                'radius_meters integer,'
-                'public_transport_time integer,'
-                'service_evaluation jsonb,'
-                'house_evaluation jsonb,'
-                'last_calculations TIMESTAMPTZ'
+                '  city_service_type_id integer PRIMARY KEY REFERENCES city_service_types(id) NOT NULL,'
+                '  normative float NOT NULL,'
+                '  max_load integer NOT NULL,'
+                '  radius_meters integer,'
+                '  public_transport_time integer,'
+                '  service_evaluation jsonb,'
+                '  house_evaluation jsonb,'
+                '  last_calculations TIMESTAMPTZ'
                 ')'
         )
         cur.execute('CREATE TABLE IF NOT EXISTS provision.services ('
@@ -554,7 +554,8 @@ if __name__ == '__main__':
     properties = Properties('localhost', 5432, 'city_db_final', 'postgres', 'postgres')
     properties_geometry = Properties('localhost', 5432, 'provision', 'postgres', 'postgres')
     city_name = 'Санкт-Петербург'
-    public_transport_service_endpoint = 'http://10.32.1.61:8080/api.v2/isochrones'
+    public_transport_service_endpoint = 'http://10.32.1.62:5000/mobility_analysis/isochrones?x_from={latitude}&y_from={longitude}&travel_time={time}&travel_type=public_transport'
+    # public_transport_service_endpoint = 'http://10.32.1.61:8080/api.v2/isochrones'
 
     log.addHandler(logging.StreamHandler())
     log.handlers[-1].setFormatter(logging.Formatter('{asctime} [{levelname:^8}]: {message}', datefmt='%Y-%m-%d %H:%M:%S', style='{'))
@@ -627,6 +628,7 @@ if __name__ == '__main__':
         if res is None:
             log.error(f'City with name "{city_name}" is missing in database. Exiting.')
             exit(1)
+        log.info(f'Working with city "{city_name}" (id={city_id})')
         cur.execute('SELECT st.name, n.normative, n.max_load, n.radius_meters, n.public_transport_time, n.service_evaluation,'
                 '   n.house_evaluation FROM provision.normatives n'
                 ' JOIN city_service_types st ON n.city_service_type_id = st.id')
@@ -671,14 +673,14 @@ if __name__ == '__main__':
         log.info(f'Starting generation of table 2')
         t = time.time()
         t_begin_service_type = t
-        table_2 = generate_table_2(properties.conn, properties_geometry.conn, service_type, normatives[service_type],
+        table_2 = generate_table_2(properties.conn, properties_geometry.conn, service_type, normatives[service_type], city_id,
                 wait_for_transport_service=not args.nts, public_transport_service_endpoint=public_transport_service_endpoint)
         delta = int(time.time() - t)
         log.info(f'Table 2 has finished in {delta // 3600}:{delta // 60 - delta // 3600 * 60:02}:{delta % 60:02}')
 
         log.info('Starting generation of table 1 and table 3')
         t = time.time()
-        table_1, table_3 = generate_table_1_3(properties.conn, properties_geometry.conn, service_type, normatives[service_type],
+        table_1, table_3 = generate_table_1_3(properties.conn, properties_geometry.conn, service_type, normatives[service_type], city_id,
                 wait_for_transport_service=not args.nts)
         delta = int(time.time() - t)
         log.info(f'Table 1 and 3 have finished in {delta // 3600}:{delta // 60 - delta // 3600 * 60:02}:{delta % 60:02}')
