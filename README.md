@@ -57,13 +57,13 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -C,--default_city \<str\> - default_city
 * -m,--mongo_url \<str\> - mongo_url
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2022-02-24)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2022-03-10)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2022-02-24 .`
+2. build image with `docker build --tag kanootoko/digitalmodel_provision:2022-03-10 .`
 3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2022-02-24`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2022-02-24`  
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2022-03-10`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2022-03-10`  
       Ensure that:
         1. _/etc/postgresql/\<version\>/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/\<version\>/main/pg\_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)

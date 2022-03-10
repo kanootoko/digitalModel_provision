@@ -341,7 +341,7 @@ def relevant_social_groups() -> Response:
     res: pd.DataFrame = get_social_groups(request.args.get('service_type'), request.args.get('living_situation'))
     res = res.merge(listings.social_groups.set_index('name'), how='inner', left_on='social_group', right_index=True)
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'parameters': {
                 'service_type': request.args.get('service_type'),
@@ -359,7 +359,7 @@ def list_social_groups() -> Response:
     ids = list(listings.social_groups.set_index('name').loc[list(res)]['id'])
     codes = list(listings.social_groups.set_index('name').loc[list(res)]['code'])
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'parameters': {
                 'service_type': request.args.get('service_type'),
@@ -398,7 +398,7 @@ def relevant_city_functions() -> Response:
     res: pd.DataFrame = get_city_functions(request.args.get('social_group'), request.args.get('living_situation'))
     res = res.merge(listings.city_functions.set_index('name'), how='inner', left_on='city_function', right_index=True)
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'parameters': {
                 'social_group': request.args.get('social_group'),
@@ -416,7 +416,7 @@ def list_city_functions() -> Response:
     ids = list(listings.city_functions.set_index('name').loc[list(res)]['id'])
     codes = list(listings.city_functions.set_index('name').loc[list(res)]['code'])
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'parameters': {
                 'social_group': request.args.get('social_group'),
@@ -458,7 +458,7 @@ def relevant_service_types() -> Response:
     res: pd.DataFrame = get_service_types(request.args.get('social_group'), request.args.get('living_situation'), city_name)
     res = res.merge(listings.service_types.set_index('name'), how='inner', left_on='service_type', right_index=True)
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'parameters': {
                 'social_group': request.args.get('social_group'),
@@ -477,7 +477,7 @@ def list_service_types() -> Response:
     ids = list(listings.service_types.set_index('name').loc[list(res)]['id'])
     codes = list(listings.service_types.set_index('name').loc[list(res)]['code'])
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'parameters': {
                 'social_group': request.args.get('social_group'),
@@ -519,7 +519,7 @@ def relevant_living_situations() -> Response:
             significance = next(iter(res['significance']))
         res = res.drop('significance', axis=1)
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'parameters': {
                 'social_group': request.args.get('social_group'),
@@ -537,7 +537,7 @@ def list_living_situations() -> Response:
     res: List[str] = get_living_situations(request.args.get('social_group'), request.args.get('service_type'), to_list=True)
     ids = list(listings.living_situations.set_index('name').loc[list(res)]['id'])
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'params': {
                 'social_group': request.args.get('social_group'),
@@ -553,7 +553,7 @@ def list_living_situations() -> Response:
 @logged
 def list_infrastructures() -> Response:
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'infrastructures': [{
                 'id': infra_id,
@@ -584,7 +584,7 @@ def list_districts() -> Response:
     city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
     districts = city_hierarchy[city_hierarchy['city'] == city_name][['district_id', 'district']].dropna().drop_duplicates().sort_values('district')
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'districts': list(districts['district']),
             'districts_ids': list(districts['district_id'])
@@ -598,7 +598,7 @@ def list_municipalities() -> Response:
     city_name: str = get_parameter_of_request(request.args.get('city', default_city), 'city', 'name', False) or default_city # type: ignore
     municipalities = city_hierarchy[city_hierarchy['city'] == city_name][['municipality_id', 'municipality']].dropna().drop_duplicates().sort_values('municipality')
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'municipalities': list(municipalities['municipality']),
             'municipalities_ids': list(municipalities['municipality_id'])
@@ -682,7 +682,7 @@ def list_city_hierarchy() -> Response:
                         blocks_local[blocks_local['district'] == district['name']]['population'].items()]
 
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'districts': districts,
             'municipalities': municipalities,
@@ -698,10 +698,10 @@ def list_city_hierarchy() -> Response:
 @logged
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2022-02-24',
+        'version': '2022-03-10',
         '_links': {
             'self': {
-                'href': request.path
+                'href': request.full_path
             },
             'list-social_groups': {
                 'href': '/api/list/social_groups/{?service_type,living_situation}',
@@ -768,6 +768,10 @@ def api_help() -> Response:
             },
             'provision_v3_houses' : {
                 'href': '/api/provision_v3/houses/{?city,service_type,location,everything}',
+                'templated': True
+            },
+            'provision_v3_house_normative_load' : {
+                'href': '/api/provision_v3/house/{house_id}/normative_load/{?service_type,no_round}',
                 'templated': True
             },
             'provision_v3_house_service_types' : {
@@ -843,7 +847,7 @@ def provision_v3_services() -> Response:
         df = df.drop('service_type', axis=1)
     return make_response(jsonify({
         '_links': {
-            'self': {'href': request.path},
+            'self': {'href': request.full_path},
             'service_info': {'href': '/api/provision_v3/service/{service_id}/', 'templated': True},
             'houses': {'href': '/api/provision_v3/service_houses/{service_id}/', 'templated': True}
         },
@@ -884,7 +888,7 @@ def provision_v3_service_info(service_id: int) -> Response:
             service_info['reserve_resource'] = res[11]
             service_info['provision'] = res[12] # TODO: 'provision' -> 'evaluation'
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'service': service_info,
             'parameters': {
@@ -929,13 +933,13 @@ def service_availability_zone(service_id: int) -> Response:
                         status = 500
     if error is not None:
         return make_response(jsonify({
-            '_links': {'self': {'href': request.path}},
+            '_links': {'self': {'href': request.full_path}},
             '_embedded': {
                 'error': error
             }
         }), status)
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'params': {
                 'service_type': service_type,
@@ -987,13 +991,13 @@ def house_availability_zone(house_id: int) -> Response:
                             status = 500
     if error is not None:
         return make_response(jsonify({
-            '_links': {'self': {'href': request.path}},
+            '_links': {'self': {'href': request.full_path}},
             '_embedded': {
                 'error': error
             }
         }), status)
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'params': {
                 'service_type': request.args['service_type'],
@@ -1032,7 +1036,7 @@ def provision_v3_houses() -> Response:
             location = f'{location} (not found)'
     if not location_tuple and not service_type and not 'everything' in request.args:
         return make_response(jsonify({
-            '_links': {'self': {'href': request.path}},
+            '_links': {'self': {'href': request.full_path}},
             '_embedded': {
                 'houses': [],
                 'parameters': {
@@ -1088,7 +1092,7 @@ def provision_v3_houses() -> Response:
             })
     return make_response(jsonify({
         '_links': {
-            'self': {'href': request.path},
+            'self': {'href': request.full_path},
             'services': {'href': '/api/provision_v3/house/{house_id}/services/{?service_type}', 'templated': True},
             'house_info': {'href': '/api/provision_v3/house/{house_id}/{?service_type,social_group}', 'templated': True}
         },
@@ -1101,6 +1105,45 @@ def provision_v3_houses() -> Response:
             'houses': result
         }
     }))
+
+@app.route('/api/provision_v3/house/<int:house_id>/normative_load', methods=['GET'])
+@app.route('/api/provision_v3/house/<int:house_id>/normative_load/', methods=['GET'])
+@logged
+def provision_v3_house_normative_loads(house_id: int) -> Response:
+    city_service_type: Optional[str] = request.args.get('service_type')
+    no_round = request.args.get('no_round') in ('1', 'true', 'yes')
+    normative_load: Union[Dict[str, int], int, None]
+    with houses_properties.conn, houses_properties.conn.cursor() as cur:
+        cur.execute('SELECT resident_number FROM buildings WHERE physical_object_id = (SELECT physical_object_id FROM functional_objects WHERE id = %s)',
+                (house_id,))
+        res = cur.fetchone()
+        if res is None:
+            normative_load = None
+        else:
+            population = res[0]
+            if city_service_type is None:
+                normative_load = {}
+                cur.execute('SELECT (SELECT name FROM city_service_types WHERE id = n.city_service_type_id), normative FROM provision.normatives n')
+                for st, normative in cur.fetchall():
+                    normative_load[st] = normative * population / 1000 if no_round else round(normative * population / 1000)
+            else:
+                cur.execute('SELECT normative FROM provision.normatives WHERE city_service_type_id = %s',
+                        (get_parameter_of_request(city_service_type, 'service_type', 'id'),))
+                normative_load = cur.fetchone()
+                if normative_load is not None:
+                    normative_load = normative_load[0] * population / 1000 if no_round else round(normative_load[0] * population / 1000) # type: ignore
+
+        return make_response(jsonify({
+            '_links': {
+                'self': {'href': request.full_path},
+            },
+            '_embedded': {
+                'normative_load': normative_load,
+                'parameters': {
+                    'service_type': city_service_type
+                }
+            }
+        }))
 
 @app.route('/api/provision_v3/house/<int:house_id>', methods=['GET'])
 @app.route('/api/provision_v3/house/<int:house_id>/', methods=['GET'])
@@ -1156,7 +1199,7 @@ def provision_v3_house(house_id: int) -> Response:
                         'prosperity': 10 + round(float(significances[service_type] * (provision - 10)), 2) if service_type in significances else None} \
                     for _, (service_type, reserve, provision) in house_service_types[['service_type', 'reserve_resource', 'provision']].iterrows()]
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'house': house_info,
             'parameters': {
@@ -1188,7 +1231,7 @@ def house_services(house_id: int) -> Response:
             services = [{'id': func_id, 'name': name, 'center': json.loads(center), 'service_type': service_type, 'load_part': load_part,
                             'load_service': round(load_service, 2)} for func_id, name, center, service_type, load_part, load_service in cur.fetchall()]
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'parameters': {
                 'service_type': service_type
@@ -1215,7 +1258,7 @@ def service_houses(service_id: int) -> Response:
         houses = [{'id': func_id, 'population': population, 'center': json.loads(center), 'load_part': load_part,
                         'load_house': round(population * normative / 1000, 2)} for func_id, population, center, load_part in cur.fetchall()]
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'houses': houses
         }
@@ -1244,7 +1287,7 @@ def provision_v3_ready() -> Response:
         if 'service_type' in request.args:
             df = df[df['service_type'] == get_parameter_of_request(request.args['service_type'], 'service_type', 'name')]
         return make_response(jsonify({
-            '_links': {'self': {'href': request.path}},
+            '_links': {'self': {'href': request.full_path}},
             '_embedded': {
                 'service_types': list(df.replace({np.nan: None}).transpose().to_dict().values())
             }
@@ -1266,7 +1309,7 @@ def provision_v3_not_ready() -> Response:
                 ' ORDER BY 1',
                 (city_name,) * 2)
         return make_response(jsonify({
-            '_links': {'self': {'href': request.path}},
+            '_links': {'self': {'href': request.full_path}},
             '_embedded': {
                 'service_types': [{'service_type': service_type, 'unevaluated': unevaluated, 'total_count': total} for \
                         service_type, unevaluated, total in cur.fetchall()]
@@ -1279,7 +1322,7 @@ def provision_v3_not_ready() -> Response:
 def provision_v3_prosperity(location_type: str) -> Response:
     if location_type not in ('districts', 'municipalities', 'blocks'):
         return make_response(jsonify({
-            '_links': {'self': {'href': request.path}},
+            '_links': {'self': {'href': request.full_path}},
             '_embedded': {
                 'error': f"location_type must be 'blocks', 'districts' or 'municipalities', but '{location_type}' is given"
             }
@@ -1469,7 +1512,7 @@ def provision_v3_prosperity(location_type: str) -> Response:
         parameters['social_group'] = social_group
 
     return make_response(jsonify({
-        '_links': {'self': {'href': request.path}},
+        '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'prosperity': list(res.transpose().replace({np.nan: None}).to_dict().values()),
             'parameters': parameters
