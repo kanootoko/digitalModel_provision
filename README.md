@@ -37,6 +37,7 @@ Parameters can be configured with environment variables:
 * PROVISION_DB_PASS - provision_db_pass - user password for database with provision [default: _postgres_] (string)
 * PROVISION_DEFAULT_CITY - default_city - name of a city to work with by default
 * PROVISION_MONGO_URL - mongo_url - optional url to mongo database to write logs in "logs" collection
+* PROVISION_DISABLE_DB_ENDPOINTS - no_db_endpoints - set to any value except "0", "f", "false" or "no" to disable /api/db/... endpoints group
 
 ## Configuration by CLI Parameters
 
@@ -53,17 +54,20 @@ Command line arguments configuration is also avaliable (overrides environment va
 * -pN,--provision_db_name \<str\> - provision_db_name
 * -pU,--provision_db_user \<str\> - provision_db_user
 * -pW,--provision_db_pass \<str\> - provision_db_pass
-* -D,--debug - launch in debug mode (available only by CLI)
 * -C,--default_city \<str\> - default_city
 * -m,--mongo_url \<str\> - mongo_url
+* -nDE,--no_db_endpoints - no_db_endpoints
+* -D,--debug - launch in debug mode (available only by CLI)
 
-## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2022-03-10)
+## Building Docker image (the other way is to use Docker repository: kanootoko/digitalmodel_provision:2022-04-01)
 
 1. open terminal in cloned repository
-2. build image with `docker build --tag kanootoko/digitalmodel_provision:2022-03-10 .`
-3. run image with postgres server running on host machine on default port 5432
-    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2022-03-10`
-    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2022-03-10`  
+2. run `git submodule update --init` to download module for /api/db/... endpoints group
+3. (temporary) open submodule directory and change branch to the latest version: `cd df_saver_cli && git checkout kanootoko && cd ..`
+4. build image with `s`
+5. run image with postgres server running on host machine on default port 5432
+    1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2022-04-01`
+    2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2022-04-01`  
       Ensure that:
         1. _/etc/postgresql/\<version\>/main/postgresql.conf_ contains uncommented setting `listen_addresses = '*'` so app could access postgres from Docker network
         2. _/etc/postgresql/\<version\>/main/pg\_hba.conf_ contains `host all all 0.0.0.0/0 md5` so login could be performed from anywhere (you can set docker container address instead of 0.0.0.0)
@@ -76,6 +80,8 @@ After the launch you can find api avaliable at localhost:port/ . In example give
 
 ## Endpoints
 
+Endpoints are documented in russian at [documentation](documentation.docx).  
+  
 At this moment there are endpoints:
 
 * **/api**: returns HAL description of API provided.

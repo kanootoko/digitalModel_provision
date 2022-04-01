@@ -41,19 +41,18 @@ class NonASCIIJSONEncoder(json.JSONEncoder):
         super().__init__(**kwargs)
 
 class Properties:
-    def __init__(self, db_addr: str, db_port: int, db_name: str, db_user: str, db_pass: str, api_port: int):
+    def __init__(self, db_addr: str, db_port: int, db_name: str, db_user: str, db_pass: str):
         self.db_addr = db_addr
         self.db_port = db_port
         self.db_name = db_name
         self.db_user = db_user
         self.db_pass = db_pass
-        self.api_port = api_port
         self._conn: Optional[psycopg2.extensions.connection] = None
 
     @property
     def conn_string(self) -> str:
         return f'host={self.db_addr} port={self.db_port} dbname={self.db_name}' \
-                f' user={self.db_user} password={self.db_pass}'
+                f' user={self.db_user} password={self.db_pass} connect_timeout=5'
 
     @property
     def conn(self) -> psycopg2.extensions.connection:
@@ -698,7 +697,7 @@ def list_city_hierarchy() -> Response:
 @logged
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2022-03-10',
+        'version': '2022-04-01',
         '_links': {
             'self': {
                 'href': request.full_path
@@ -1542,17 +1541,19 @@ if __name__ == '__main__':
 
     # Default houses_properties settings
 
-    houses_properties = Properties('localhost', 5432, 'city_db_final', 'postgres', 'postgres', 8080) # TODO: move api port to its own variable
-    provision_properties = Properties('localhost', 5432, 'provision', 'postgres', 'postgres', 8080)
+    houses_properties = Properties('localhost', 5432, 'city_db_final', 'postgres', 'postgres')
+    provision_properties = Properties('localhost', 5432, 'provision', 'postgres', 'postgres')
+    api_port = 8080
     public_transport_endpoint = 'http://10.32.1.61:8080/api.v2/isochrones'
     personal_transport_endpoint = 'http://10.32.1.61:8080/api.v2/isochrones'
     walking_endpoint = 'http://10.32.1.62:5002/pedastrian_walk/isochrones?x_from={lng}&y_from={lat}&times={t}'
+    enable_db_endpoints = True
     mongo_url: Optional[str] = None
 
     # Environment variables
 
     if 'PROVISION_API_PORT' in os.environ:
-        houses_properties.api_port = int(os.environ['PROVISION_API_PORT'])
+        api_port = int(os.environ['PROVISION_API_PORT'])
     if 'PROVISION_DEFAULT_CITY' in os.environ:
         default_city = os.environ['PROVISION_DEFAULT_CITY']
     if 'PUBLIC_TRANSPORT_ENDPOINT' in os.environ:
@@ -1561,6 +1562,8 @@ if __name__ == '__main__':
         personal_transport_endpoint = os.environ['PERSONAL_TRANSPORT_ENDPOINT']
     if 'PROVISION_MONGO_URL' in os.environ:
         mongo_url = os.environ['PROVISION_MONGO_URL']
+    if 'PROVISION_DISABLE_DB_ENDPOINTS' in os.environ and os.environ['PROVISION_DISABLE_DB_ENDPOINTS'].lower() not in ('0', 'f', 'false', 'no'):
+        enable_db_endpoines = False
     if 'WALKING_ENDPOINT' in os.environ:
         walking_endpoint = os.environ['WALKING_ENDPOINT']
     if 'HOUSES_DB_ADDR' in os.environ:
@@ -1617,8 +1620,10 @@ if __name__ == '__main__':
     parser.add_argument('-wlkT', '--walking_endpoint', action='store', dest='walking_endpoint',
                         help=f'endpoint for getting walking polygons [default: {walking_endpoint}]', type=str)
     parser.add_argument('-p', '--port', action='store', dest='api_port',
-                        help=f'postgres port number [default: {houses_properties.api_port}]', type=int)
+                        help=f'postgres port number [default: {api_port}]', type=int)
     parser.add_argument('-D', '--debug', action='store_true', dest='debug', help=f'debug trigger')
+    parser.add_argument('-nDE', '--no_db_endpoints', action='store_true', dest='no_db_endpoints',
+            help=f'disable select endpoint (due to security or other reasons)')
     args = parser.parse_args()
 
     if args.houses_db_addr is not None:
@@ -1650,7 +1655,9 @@ if __name__ == '__main__':
     if args.walking_endpoint is not None:
         walking_endpoint = args.walking_endpoint
     if args.api_port is not None:
-        houses_properties.api_port = args.api_port
+        api_port = args.api_port
+    if args.no_db_endpoints:
+        enable_db_endpoints = False
     if args.mongo_url is not None:
         mongo_url = args.mongo_url
 
@@ -1680,12 +1687,56 @@ if __name__ == '__main__':
             log.info(f'Attached mongo logger at {public_mongo_url}')
         except Exception as ex:
             log.error(f'Could not attach required mongo database (url: {public_mongo_url}) for logging: {ex!r}')
+
+    if enable_db_endpoints:
+        try:
+            import df_saver_cli.saver as saver
+            from io import StringIO
+            @app.route('/api/db')
+            @app.route('/api/db/')
+            @logged
+            def db_select() -> Response:
+                if 'query' not in request.args:
+                    with houses_properties.conn, houses_properties.conn.cursor() as cur:
+                        df = saver.DatabaseDescription.get_tables_list(cur)
+                    return make_response(jsonify(list(df.transpose().to_dict().values())))
+                format = request.args.get('format', 'json')
+                geometry_column: Optional[str] = request.args.get('geometry_column', 'geometry')
+                if format != 'geojson':
+                    geometry_column = None
+                df = saver.Query.select(houses_properties.conn, request.args['query'])
+                buffer = StringIO()
+                saver.Save.to_buffer(df, buffer, format, geometry_column)
+                response = make_response(buffer.getvalue())
+                response.headers['Content-Type'] = 'application/json' if format in ('json', 'geojson') else \
+                        'text/csv' if format == 'csv' else 'application/vnd.ms-excel' if format == 'xlsx' else 'application/octet-stream'
+                return response
+            
+            @app.route('/api/db/<schema>')
+            @app.route('/api/db/<schema>/')
+            @logged
+            def db_list_tables(schema: Optional[str] = None) -> Response:
+                with houses_properties.conn, houses_properties.conn.cursor() as cur:
+                    df = saver.DatabaseDescription.get_tables_list(cur, schema)
+                return make_response(jsonify(list(df.transpose().to_dict().values())))
+
+            @app.route('/api/db/<schema>/<table>')
+            @app.route('/api/db/<schema>/<table>/')
+            @logged
+            def db_describe_table(schema: str, table: str) -> Response:
+                with houses_properties.conn, houses_properties.conn.cursor() as cur:
+                    df = saver.DatabaseDescription.get_table_description(cur, f'{schema}.{table}')
+                return make_response(jsonify(list(df.transpose().to_dict().values())))
+
+        except Exception as ex:
+            log.error(f'db_endpoints were not disabled, but loading failed: {ex}')
+
     
     log.info('Getting global data')
 
     update_global_data()
 
-    log.info(f'Starting application on 0.0.0.0:{houses_properties.api_port} with houses DB as'
+    log.info(f'Starting application on 0.0.0.0:{api_port} with houses DB as'
             f' ({houses_properties.db_user}@{houses_properties.db_addr}:{houses_properties.db_port}/{houses_properties.db_name}) and provision DB as'
             f' ({provision_properties.db_user}@{provision_properties.db_addr}:{provision_properties.db_port}/{provision_properties.db_name}).')
 
@@ -1695,11 +1746,11 @@ if __name__ == '__main__':
             walking_endpoint, raise_exceptions=True, download_geometry_after_timeout=True)
 
     if args.debug:
-        app.run(host='0.0.0.0', port=houses_properties.api_port, debug=args.debug)
+        app.run(host='0.0.0.0', port=api_port, debug=args.debug)
     else:
         import gevent.pywsgi
 
-        app_server = gevent.pywsgi.WSGIServer(('0.0.0.0', houses_properties.api_port), app)
+        app_server = gevent.pywsgi.WSGIServer(('0.0.0.0', api_port), app)
         try:
             app_server.serve_forever()
         except KeyboardInterrupt:
