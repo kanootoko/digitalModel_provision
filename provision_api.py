@@ -1691,7 +1691,7 @@ if __name__ == '__main__':
     if enable_db_endpoints:
         try:
             import df_saver_cli.saver as saver
-            from io import StringIO
+            from io import StringIO, BytesIO
             @app.route('/api/db')
             @app.route('/api/db/')
             @logged
@@ -1705,11 +1705,12 @@ if __name__ == '__main__':
                 if format != 'geojson':
                     geometry_column = None
                 df = saver.Query.select(houses_properties.conn, request.args['query'])
-                buffer = StringIO()
+                buffer = StringIO() if format != 'xlsx' else BytesIO()
                 saver.Save.to_buffer(df, buffer, format, geometry_column)
-                response = make_response(buffer.getvalue())
+                response = make_response(buffer.getvalue()) # type: ignore
                 response.headers['Content-Type'] = 'application/json' if format in ('json', 'geojson') else \
-                        'text/csv' if format == 'csv' else 'application/vnd.ms-excel' if format == 'xlsx' else 'application/octet-stream'
+                        'text/csv' if format == 'csv' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if format == 'xlsx' \
+                        else 'application/octet-stream'
                 return response
             
             @app.route('/api/db/<schema>')
