@@ -64,7 +64,7 @@ Command line arguments configuration is also avaliable (overrides environment va
 1. open terminal in cloned repository
 2. run `git submodule update --init` to download module for /api/db/... endpoints group
 3. (temporary) open submodule directory and change branch to the latest version: `cd df_saver_cli && git checkout kanootoko && cd ..`
-4. build image with `s`
+4. build image with `docker build --tag kanootoko/digitalmodel_provision:2022-04-01 .`
 5. run image with postgres server running on host machine on default port 5432
     1. For windows: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=host.docker.internal -e PROVISION_DB_ADDR=host.docker.internal --name provision_api kanootoko/digitalmodel_provision:2022-04-01`
     2. For Linux: `docker run --publish 8080:8080 -e PROVISION_API_PORT=8080 -e HOUSES_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) -e PROVISION_DB_ADDR=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d "/" -f 1) --name provision_api kanootoko/digitalmodel_provision:2022-04-01`  
