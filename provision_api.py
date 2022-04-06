@@ -1,37 +1,40 @@
-import traceback
-from flask import Flask, jsonify, make_response, request, Response
-from flask_compress import Compress
-import psycopg2
-import pandas as pd, numpy as np
 import argparse
-import simplejson as json
 import itertools
-import time
 import os
-from typing import Any, Literal, Tuple, List, Dict, Optional, Union, NamedTuple
+import sys
+import time
+import traceback
+from typing import Any, Callable, Dict, List, Literal, NamedTuple, Optional, Tuple, Union
 
-import logging
+import numpy as np
+import pandas as pd
+import psycopg2
+import simplejson as json
+from flask import Flask, jsonify, make_response, request
+from flask.wrappers import Response
+from flask_compress import Compress
+from loguru import logger
 
 import collect_geometry
+from mongolog import MongoHandler
 
-log = logging.getLogger(__name__)
-request_log = logging.getLogger(__name__ + " - requests")
+request_logger = logger.bind(request=True)
 
-def logged(func: 'function'):
+def logged(func: Callable[..., Response]):
     def wrapper(*args, **nargs):
-        e = {'method': request.method, 'user': request.remote_addr, 'endpoint': request.path, 'handler': func.__name__}
-        request_log.info(f'query_params: {dict(request.args)}', extra=e)
-        start_time = time.time()
-        res: Response = func(*args, **nargs)
-        t = time.time() - start_time
-        if res.status_code != 200:
-            if res.status_code == 500:
-                request_log.error(f'Fail({res.status_code}) - execution took {t * 1000}ms', extra=e)
-            elif 400 < res.status_code < 500:
-                request_log.error(f'Wrong request({res.status_code}) - execution took {t * 1000}ms', extra=e)
-            else:
-                request_log.error(f'Error({res.status_code}) - execution took {t * 1000}ms', extra=e)
-        return res
+        with request_logger.contextualize(method=request.method, user=request.remote_addr, endpoint=request.path, handler=func.__name__):
+            request_logger.info(f'query_params: {dict(request.args)}')
+            start_time = time.time()
+            res: Response = func(*args, **nargs)
+            t = time.time() - start_time
+            if res.status_code != 200:
+                if res.status_code == 500:
+                    request_logger.error(f'Fail({res.status_code}) - execution took {t * 1000}ms')
+                elif 400 < res.status_code < 500:
+                    request_logger.error(f'Wrong request({res.status_code}) - execution took {t * 1000}ms')
+                else:
+                    request_logger.error(f'Error({res.status_code}) - execution took {t * 1000}ms')
+            return res
     wrapper.__name__ = f'{func.__name__}_wrapper'
     return wrapper
 
@@ -47,7 +50,7 @@ class Properties:
         self.db_name = db_name
         self.db_user = db_user
         self.db_pass = db_pass
-        self._conn: Optional[psycopg2.extensions.connection] = None
+        self._conn: Optional['psycopg2.connection'] = None
 
     @property
     def conn_string(self) -> str:
@@ -55,13 +58,13 @@ class Properties:
                 f' user={self.db_user} password={self.db_pass} connect_timeout=5'
 
     @property
-    def conn(self) -> psycopg2.extensions.connection:
+    def conn(self) -> 'psycopg2.connection':
         if self._conn is None or self._conn.closed:
             self._conn = psycopg2.connect(self.conn_string)
         return self._conn
             
     def close(self):
-        if self.conn is not None:
+        if self._conn is not None:
             self._conn.close()
 
 houses_properties: Properties
@@ -272,6 +275,8 @@ def get_parameter_of_request(
             what_to_get_really = 'city'
         elif what_to_get == 'id':
             what_to_get_really = 'city_id'
+        else:
+            what_to_get_really = what_to_get
         if isinstance(input_value, int) or input_value.isnumeric():
             if int(input_value) not in city_hierarchy['city_id'].unique():
                 if raise_errors:
@@ -279,8 +284,13 @@ def get_parameter_of_request(
                 else:
                     return None
             res = city_hierarchy[city_hierarchy['city_id'] == int(input_value)].iloc[0][what_to_get_really]
-        if input_value in city_hierarchy['city'].unique():
+        elif input_value in city_hierarchy['city'].unique():
             res = city_hierarchy[city_hierarchy['city'] == input_value].iloc[0][what_to_get_really]
+        else:
+            if raise_errors:
+                raise ValueError(f'"{what_to_get}" could not be get from {type_of_input}')
+            else:
+                return None
         return res
     else:
         if raise_errors:
@@ -928,7 +938,7 @@ def service_availability_zone(service_id: int) -> Response:
                         status = 408
                     except Exception as ex:
                         error = f'Error on public_transport_service: {ex}'
-                        log.error(f'Getting public_transport geometry failed: {ex:r}')
+                        logger.error(f'Getting public_transport geometry failed: {ex:r}')
                         status = 500
     if error is not None:
         return make_response(jsonify({
@@ -941,11 +951,11 @@ def service_availability_zone(service_id: int) -> Response:
         '_links': {'self': {'href': request.full_path}},
         '_embedded': {
             'params': {
-                'service_type': service_type,
-                'radius_meters': radius,
-                'public_transport_time': transport
+                'service_type': service_type, # type: ignore
+                'radius_meters': radius, # type: ignore
+                'public_transport_time': transport # type: ignore
             },
-            'geometry': geometry
+            'geometry': geometry # type: ignore
         }
     }))
     
@@ -986,7 +996,7 @@ def house_availability_zone(house_id: int) -> Response:
                             status = 408
                         except Exception as ex:
                             error = f'Error on public_transport_service: {ex}'
-                            log.error(f'Getting public_transport geometry failed: {ex:r}')
+                            logger.error(f'Getting public_transport geometry failed: {ex:r}')
                             status = 500
     if error is not None:
         return make_response(jsonify({
@@ -1000,10 +1010,10 @@ def house_availability_zone(house_id: int) -> Response:
         '_embedded': {
             'params': {
                 'service_type': request.args['service_type'],
-                'radius_meters': radius,
-                'public_transport_time': transport
+                'radius_meters': radius, # type: ignore
+                'public_transport_time': transport # type: ignore
             },
-            'geometry': geometry
+            'geometry': geometry # type: ignore
         }
     }))
     
@@ -1017,6 +1027,7 @@ def provision_v3_houses() -> Response:
     location = request.args.get('location')
     location_tuple: Optional[Tuple[Literal['district', 'municipality'], int]] = None
     social_group: Optional[str] = request.args.get('social_group')
+    significances = {}
     if social_group:
         if social_group == 'mean':
             significances = {service_type: needs[needs['service_type'] == service_type]['significance'].mean() for \
@@ -1128,7 +1139,7 @@ def provision_v3_house_normative_loads(house_id: int) -> Response:
             else:
                 cur.execute('SELECT normative FROM provision.normatives WHERE city_service_type_id = %s',
                         (get_parameter_of_request(city_service_type, 'service_type', 'id'),))
-                normative_load = cur.fetchone()
+                normative_load = cur.fetchone() # type: ignore
                 if normative_load is not None:
                     normative_load = normative_load[0] * population / 1000 if no_round else round(normative_load[0] * population / 1000) # type: ignore
 
@@ -1150,7 +1161,8 @@ def provision_v3_house_normative_loads(house_id: int) -> Response:
 def provision_v3_house(house_id: int) -> Response:
     service_type = get_parameter_of_request(request.args.get('service_type'), 'service_type', 'id')
     social_group: Optional[str] = request.args.get('social_group')
-    house_info: Dict[str, Any] = dict()
+    house_info: Dict[str, Any] = {}
+    significances = {}
     with houses_properties.conn, houses_properties.conn.cursor() as cur:
         cur.execute('SELECT city FROM houses WHERE functional_object_id = %s', (house_id,))
         city_name = cur.fetchone()
@@ -1187,16 +1199,16 @@ def provision_v3_house(house_id: int) -> Response:
     if house_info['address'] != 'Not found':
         if social_group is None:
             house_info['service_types'] = [{'service_type': service_type, 'reserve_resources': reserve, 'provision': provision} \
-                for _, (service_type, reserve, provision) in house_service_types[['service_type', 'reserve_resource', 'provision']].iterrows()]
+                for _, (service_type, reserve, provision) in house_service_types[['service_type', 'reserve_resource', 'provision']].iterrows()] # type: ignore
         else:
             if social_group == 'mean':
                 house_info['service_types'] = [{'service_type': service_type, 'reserve_resources': reserve, 'provision': provision,
                         'prosperity': 10 + round(float(significances[service_type]) * (provision - 10), 2) if service_type in significances else None} \
-                    for _, (service_type, reserve, provision) in house_service_types[['service_type', 'reserve_resource', 'provision']].iterrows()]
+                    for _, (service_type, reserve, provision) in house_service_types[['service_type', 'reserve_resource', 'provision']].iterrows()] # type: ignore
             else:
                 house_info['service_types'] = [{'service_type': service_type, 'reserve_resources': reserve, 'provision': provision,
                         'prosperity': 10 + round(float(significances[service_type] * (provision - 10)), 2) if service_type in significances else None} \
-                    for _, (service_type, reserve, provision) in house_service_types[['service_type', 'reserve_resource', 'provision']].iterrows()]
+                    for _, (service_type, reserve, provision) in house_service_types[['service_type', 'reserve_resource', 'provision']].iterrows()] # type: ignore
     return make_response(jsonify({
         '_links': {'self': {'href': request.full_path}},
         '_embedded': {
@@ -1526,8 +1538,8 @@ def not_found(_):
 def any_error(error: Exception):
     houses_properties.conn.rollback()
     e = {'method': request.method, 'user': request.remote_addr, 'endpoint': request.full_path, 'handler': "error"}
-    request_log.error(f'error {error!r}', extra=e)
-    request_log.warning('Traceback:' + '\n'.join(traceback.format_tb(error.__traceback__)), extra=e)
+    logger.error(f'error {error!r}', extra=e)
+    logger.warning('Traceback:' + '\n'.join(traceback.format_tb(error.__traceback__)), extra=e)
     return make_response(jsonify({
         'error': str(error),
         'error_type': str(type(error)),
@@ -1661,18 +1673,14 @@ if __name__ == '__main__':
     if args.mongo_url is not None:
         mongo_url = args.mongo_url
 
-    log_handler = logging.StreamHandler()
-    log_handler.setFormatter(logging.Formatter(fmt='api [{levelname}] - {asctime}: {message}', datefmt='%Y-%m-%d %H:%M:%S', style='{'))
-    log_handler.setLevel('INFO' if not args.debug else 'DEBUG')
-    log.addHandler(log_handler)
-    log.setLevel('INFO' if not args.debug else 'DEBUG')
+    logger.remove()
+    logger.add(sys.stderr, format='api <level>[{level}]</level> - <blue>{time:YY-MM-DD HH:mm:ss}</blue>: {message}', level='INFO' if not args.debug else 'DEBUG',
+            filter=lambda record: 'request' not in record['extra'], colorize=True)
 
-    log_handler = logging.StreamHandler()
-    log_handler.setFormatter(logging.Formatter(fmt='api [{levelname}] - {asctime}: {user} {method} {endpoint} ({handler}): {message}',
-            datefmt='%Y-%m-%d %H:%M:%S', style='{'))
-    log_handler.setLevel('INFO' if not args.debug else 'DEBUG')
-    request_log.addHandler(log_handler)
-    request_log.setLevel('INFO' if not args.debug else 'DEBUG')
+    logger.add(sys.stderr,
+            format='api <level>[{level}]</level> - <blue>{time:YY-MM-DD HH:mm:ss}</blue>:' \
+                    ' <yellow>{extra[user]} {extra[method]}</yellow> {extra[endpoint]} <cyan>({extra[handler]})</cyan>: <blue>{message}</blue>',
+            level='INFO' if not args.debug else 'DEBUG', filter=lambda record: 'request' in record['extra'], colorize=True)
 
     if mongo_url is not None:
         if ':' not in mongo_url or '@' not in mongo_url:
@@ -1681,17 +1689,17 @@ if __name__ == '__main__':
             public_mongo_url = mongo_url[:mongo_url.find(':')] + mongo_url[mongo_url.find('@'):]
         try:
             from mongolog import MongoHandler
-            mongo_handler = MongoHandler(mongo_url, "provision_api")
-            log_handler.setLevel('INFO' if not args.debug else 'DEBUG')
-            request_log.addHandler(mongo_handler)
-            log.info(f'Attached mongo logger at {public_mongo_url}')
+            mongo_handler = MongoHandler(mongo_url, "provision_api", level='INFO' if not args.debug else 'DEBUG')
+            logger.add(mongo_handler, filter=lambda record: 'request' in record['extra'])
+            logger.info(f'Attached mongo logger at {public_mongo_url}')
         except Exception as ex:
-            log.error(f'Could not attach required mongo database (url: {public_mongo_url}) for logging: {ex!r}')
+            logger.error(f'Could not attach required mongo database (url: {public_mongo_url}) for logging: {ex!r}')
 
     if enable_db_endpoints:
         try:
+            from io import BytesIO, StringIO
+
             import df_saver_cli.saver as saver
-            from io import StringIO, BytesIO
             @app.route('/api/db')
             @app.route('/api/db/')
             @logged
@@ -1706,7 +1714,7 @@ if __name__ == '__main__':
                     geometry_column = None
                 df = saver.Query.select(houses_properties.conn, request.args['query'])
                 buffer = StringIO() if format != 'xlsx' else BytesIO()
-                saver.Save.to_buffer(df, buffer, format, geometry_column)
+                saver.Save.to_buffer(df, buffer, format, geometry_column) # type: ignore # TODO : make buffer Union[TextIO, BinaryIO] in saver
                 response = make_response(buffer.getvalue()) # type: ignore
                 response.headers['Content-Type'] = 'application/json' if format in ('json', 'geojson') else \
                         'text/csv' if format == 'csv' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if format == 'xlsx' \
@@ -1730,19 +1738,20 @@ if __name__ == '__main__':
                 return make_response(jsonify(list(df.transpose().to_dict().values())))
 
         except Exception as ex:
-            log.error(f'db_endpoints were not disabled, but loading failed: {ex}')
+            logger.error(f'db_endpoints were not disabled, but loading failed: {ex}')
 
     
-    log.info('Getting global data')
+    logger.info('Getting global data')
 
     update_global_data()
 
-    log.info(f'Starting application on 0.0.0.0:{api_port} with houses DB as'
-            f' ({houses_properties.db_user}@{houses_properties.db_addr}:{houses_properties.db_port}/{houses_properties.db_name}) and provision DB as'
-            f' ({provision_properties.db_user}@{provision_properties.db_addr}:{provision_properties.db_port}/{provision_properties.db_name}).')
+    logger.opt(colors=True).info(f'Starting application on 0.0.0.0:{api_port} with houses DB as'
+            f' (<magenta>{houses_properties.db_user}@{houses_properties.db_addr}:{houses_properties.db_port}/{houses_properties.db_name}</magenta>) and provision DB as'
+            f' (<magenta>{provision_properties.db_user}@{provision_properties.db_addr}:{provision_properties.db_port}/{provision_properties.db_name}</magenta>)')
 
-    log.info(f'Public_ransport endpoint is set to "{public_transport_endpoint}", personal_transport endpoint = "{personal_transport_endpoint}",'
-            f' walking endpoint = "{walking_endpoint}"')
+    logger.opt(colors=True).info(f'Public_ransport endpoint is set to <green>"{public_transport_endpoint}"</green>'
+            f' personal_transport endpoint = <green>"{personal_transport_endpoint}"</green>,'
+            f' walking endpoint = <green>"{walking_endpoint}"</green>')
     collect_geom = collect_geometry.CollectGeometry(provision_properties.conn, public_transport_endpoint, personal_transport_endpoint,
             walking_endpoint, raise_exceptions=True, download_geometry_after_timeout=True)
 
@@ -1756,4 +1765,4 @@ if __name__ == '__main__':
             app_server.serve_forever()
         except KeyboardInterrupt:
             app_server.stop()
-    log.info('Finishing the provision_api server')
+    logger.info('Finishing the provision_api server')

@@ -1,11 +1,11 @@
 from pymongo import MongoClient, ASCENDING
-from typing import Dict, Any
+from typing import Dict, Any, Literal
 import logging
 import datetime
 
 class MongoHandler(logging.Handler):
-    def __init__(self, conn_string: str, component_name: str):
-        super().__init__()
+    def __init__(self, conn_string: str, component_name: str, level: Literal['CRITICAL', 'ERROR', 'WARNING', 'SUCCESS', 'INFO', 'DEBUG', 'TRACE']):
+        super().__init__(level)
         self.component = component_name
         self.client = MongoClient(conn_string)
         self.db = self.client.get_database('logs')
