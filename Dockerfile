@@ -9,9 +9,9 @@ RUN pip3 install -r /df_saver_cli/requirements.txt 2>/dev/null || echo "NO df_sa
 COPY df_saver_cli/saver.p[y] /df_saver_cli/
 
 
-COPY provision_api.py /
-
 COPY collect_geometry.py /
 COPY mongolog.py /
+
+COPY provision_api.py /
 
 ENTRYPOINT [ "python3", "/provision_api.py" ]

@@ -1,11 +1,10 @@
-import argparse
 import itertools
-import os
 import sys
 import time
 import traceback
 from typing import Any, Callable, Dict, List, Literal, NamedTuple, Optional, Tuple, Union
 
+import click
 import numpy as np
 import pandas as pd
 import psycopg2
@@ -16,7 +15,6 @@ from flask_compress import Compress
 from loguru import logger
 
 import collect_geometry
-from mongolog import MongoHandler
 
 request_logger = logger.bind(request=True)
 
@@ -90,7 +88,8 @@ provision_administrative_units: Dict[str, pd.DataFrame] = {}
 provision_municipalities: Dict[str, pd.DataFrame] = {}
 provision_blocks: Dict[str, pd.DataFrame] = {}
 
-default_city = 'Санкт-Петербург'
+default_city: str = ''
+collect_geom: collect_geometry.CollectGeometry
 
 def update_global_data() -> None:
     global needs
@@ -707,7 +706,7 @@ def list_city_hierarchy() -> Response:
 @logged
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2022-04-06',
+        'version': '2022-04-08',
         '_links': {
             'self': {
                 'href': request.full_path
@@ -1537,9 +1536,9 @@ def not_found(_):
 @app.errorhandler(Exception)
 def any_error(error: Exception):
     houses_properties.conn.rollback()
-    e = {'method': request.method, 'user': request.remote_addr, 'endpoint': request.full_path, 'handler': "error"}
-    logger.error(f'error {error!r}', extra=e)
-    logger.warning('Traceback:' + '\n'.join(traceback.format_tb(error.__traceback__)), extra=e)
+    with logger.contextualize(method=request.method, user=request.remote_addr, endpoint=request.full_path, handler='error'):
+        logger.error(f'error {error!r}')
+        logger.warning('Traceback:' + '\n'.join(traceback.format_tb(error.__traceback__)))
     return make_response(jsonify({
         'error': str(error),
         'error_type': str(type(error)),
@@ -1549,138 +1548,61 @@ def any_error(error: Exception):
     }), 500)
 
 
-if __name__ == '__main__':
 
-    # Default houses_properties settings
+@click.command('Start the provision API server')
+@click.option('-p', '--port', envvar='PROVISION_API_PORT', type=int, default=8080, help='port for provision_api to listen at')
+@click.option('-hH', '--houses_db_addr', envvar='HOUSES_DB_ADDR', default='localhost', help='postgres host address for the main database')
+@click.option('-hP', '--houses_db_port', envvar='HOUSES_DB_PORT', type=int, default=5432, help='postgres port number for the main database')
+@click.option('-hD', '--houses_db_name', envvar='HOUSES_DB_NAME', default='city_db_final', help='postgres database name for the main database')
+@click.option('-hU', '--houses_db_user', envvar='HOUSES_DB_USER', default='postgres', help='postgres user name for the main database')
+@click.option('-hW', '--houses_db_pass', envvar='HOUSES_DB_PASS', default='postgres', help='database user password for the main database')
+@click.option('-pH', '--provision_db_addr', envvar='PROVISION_DB_ADDR', default='localhost',
+        help='postgres host address for the provision (transport isochrones) database')
+@click.option('-pP', '--provision_db_port', envvar='PROVISION_DB_PORT', type=int, default=5432,
+        help='postgres port number for the provision (transport isochrones) database')
+@click.option('-pD', '--provision_db_name', envvar='PROVISION_DB_NAME', default='city_db_final',
+        help='postgres database name for the provision (transport isochrones) database')
+@click.option('-pU', '--provision_db_user', envvar='PROVISION_DB_USER', default='postgres',
+        help='postgres user name for the provision (transport isochrones) database')
+@click.option('-pW', '--provision_db_pass', envvar='PROVISION_DB_PASS', default='postgres',
+        help='database user password for the provision (transport isochrones) database')
+@click.option('-c', '--default_city', envvar='PROVISION_DEFAULT_CITY', default='Санкт-Петербург',
+        help='default city name (for endpoints where city is not given at request)')
+@click.option('-m', '--mongo_url', envvar='PROVISION_MONGO_URL', required=False,
+        help='optional address of MongoDB for writing logs')
+@click.option('-pubT', '--public_transport_endpoint', envvar='PUBLIC_TRANSPORT_ENDPOINT',
+        default='http://10.32.1.62:5000/mobility_analysis/isochrones' \
+                '?x_from={latitude}&y_from={longitude}&travel_time={time}&city={city}&travel_type=public_transport',
+        help='endpoint for getting public transport polygons')
+@click.option('-perT', '--personal_transport_endpoint', envvar='PERSONAL_TRANSPORT_ENDPOINT',
+        default='http://10.32.1.62:5000/mobility_analysis/isochrones' \
+                '?x_from={latitude}&y_from={longitude}&travel_time={time}&city={city}&travel_type=personal_transport',
+        help='endpoint for getting personal transport polygons')
+@click.option('-wlkT', '--walking_endpoint', envvar='WALKING_ENDPOINT',
+        default='http://10.32.1.65:5000/mobility_analysis/isochrones?x_from={latitude}&y_from={longitude}&travel_type=walk&times={time}&city={city}',
+        help='endpoint for getting personal transport polygons')
+@click.option('-D', '--debug', envvar='PROVISION_ENABLE_DEBUG', is_flag=True, help='enable debug')
+@click.option('-nDE', '--no_db_endpoints', envvar='PROVISION_DISABLE_DB_ENDPOINTS', is_flag=True, help='disable select endpoint (due to security or other reasons)')
+def main(port: int, houses_db_addr: str, houses_db_port: int, houses_db_name: str, houses_db_user: str, houses_db_pass: str,
+        provision_db_addr: str, provision_db_port: int, provision_db_name: str, provision_db_user: str, provision_db_pass: str,
+        default_city: str, mongo_url: Optional[str], public_transport_endpoint: str, personal_transport_endpoint: str, walking_endpoint: str,
+        debug: bool, no_db_endpoints: bool):
+    global collect_geom
+    global houses_properties
+    global provision_properties
+    globals()['default_city'] = default_city
 
-    houses_properties = Properties('localhost', 5432, 'city_db_final', 'postgres', 'postgres')
-    provision_properties = Properties('localhost', 5432, 'provision', 'postgres', 'postgres')
-    api_port = 8080
-    public_transport_endpoint = 'http://10.32.1.61:8080/api.v2/isochrones'
-    personal_transport_endpoint = 'http://10.32.1.61:8080/api.v2/isochrones'
-    walking_endpoint = 'http://10.32.1.62:5002/pedastrian_walk/isochrones?x_from={lng}&y_from={lat}&times={t}'
-    enable_db_endpoints = True
-    mongo_url: Optional[str] = None
-
-    # Environment variables
-
-    if 'PROVISION_API_PORT' in os.environ:
-        api_port = int(os.environ['PROVISION_API_PORT'])
-    if 'PROVISION_DEFAULT_CITY' in os.environ:
-        default_city = os.environ['PROVISION_DEFAULT_CITY']
-    if 'PUBLIC_TRANSPORT_ENDPOINT' in os.environ:
-        public_transport_endpoint = os.environ['PUBLIC_TRANSPORT_ENDPOINT']
-    if 'PERSONAL_TRANSPORT_ENDPOINT' in os.environ:
-        personal_transport_endpoint = os.environ['PERSONAL_TRANSPORT_ENDPOINT']
-    if 'PROVISION_MONGO_URL' in os.environ:
-        mongo_url = os.environ['PROVISION_MONGO_URL']
-    if 'PROVISION_DISABLE_DB_ENDPOINTS' in os.environ and os.environ['PROVISION_DISABLE_DB_ENDPOINTS'].lower() not in ('0', 'f', 'false', 'no'):
-        enable_db_endpoines = False
-    if 'WALKING_ENDPOINT' in os.environ:
-        walking_endpoint = os.environ['WALKING_ENDPOINT']
-    if 'HOUSES_DB_ADDR' in os.environ:
-        houses_properties.db_addr = os.environ['HOUSES_DB_ADDR']
-    if 'HOUSES_DB_NAME' in os.environ:
-        houses_properties.db_name = os.environ['HOUSES_DB_NAME']
-    if 'HOUSES_DB_PORT' in os.environ:
-        houses_properties.db_port = int(os.environ['HOUSES_DB_PORT'])
-    if 'HOUSES_DB_USER' in os.environ:
-        houses_properties.db_user = os.environ['HOUSES_DB_USER']
-    if 'HOUSES_DB_PASS' in os.environ:
-        houses_properties.db_pass = os.environ['HOUSES_DB_PASS']
-    if 'PROVISION_DB_ADDR' in os.environ:
-        provision_properties.db_addr = os.environ['PROVISION_DB_ADDR']
-    if 'PROVISION_DB_NAME' in os.environ:
-        provision_properties.db_name = os.environ['PROVISION_DB_NAME']
-    if 'PROVISION_DB_PORT' in os.environ:
-        provision_properties.db_port = int(os.environ['PROVISION_DB_PORT'])
-    if 'PROVISION_DB_USER' in os.environ:
-        provision_properties.db_user = os.environ['PROVISION_DB_USER']
-    if 'PROVISION_DB_PASS' in os.environ:
-        provision_properties.db_pass = os.environ['PROVISION_DB_PASS']
-
-    # CLI Arguments
-
-    parser = argparse.ArgumentParser(description='Starts up the provision API server')
-    parser.add_argument('-hH', '--houses_db_addr', action='store', dest='houses_db_addr',
-                        help=f'postgres host address for the main database [default: {houses_properties.db_addr}]', type=str)
-    parser.add_argument('-hP', '--houses_db_port', action='store', dest='houses_db_port',
-                        help=f'postgres port number for the main database [default: {houses_properties.db_port}]', type=int)
-    parser.add_argument('-hd', '--houses_db_name', action='store', dest='houses_db_name',
-                        help=f'postgres database name for the main database [default: {houses_properties.db_name}]', type=str)
-    parser.add_argument('-hU', '--houses_db_user', action='store', dest='houses_db_user',
-                        help=f'postgres user name for the main database [default: {houses_properties.db_user}]', type=str)
-    parser.add_argument('-hW', '--houses_db_pass', action='store', dest='houses_db_pass',
-                        help=f'database user password for the main database [default: {houses_properties.db_pass}]', type=str)
-    parser.add_argument('-pH', '--provision_db_addr', action='store', dest='provision_db_addr',
-                        help=f'postgres host address for the provision database [default: {provision_properties.db_addr}]', type=str)
-    parser.add_argument('-pP', '--provision_db_port', action='store', dest='provision_db_port',
-                        help=f'postgres port number for the provision database [default: {provision_properties.db_port}]', type=int)
-    parser.add_argument('-pd', '--provision_db_name', action='store', dest='provision_db_name',
-                        help=f'postgres database name for the provision database [default: {provision_properties.db_name}]', type=str)
-    parser.add_argument('-pU', '--provision_db_user', action='store', dest='provision_db_user',
-                        help=f'postgres user name for the provision database [default: {provision_properties.db_user}]', type=str)
-    parser.add_argument('-pW', '--provision_db_pass', action='store', dest='provision_db_pass',
-                        help=f'database user password for the provision database [default: {provision_properties.db_pass}]', type=str)
-    parser.add_argument('-c', '--default_city', action='store', dest='default_city', help=f'city name [default: {default_city}]', type=str)
-    parser.add_argument('-m', '--mongo_url', action='store', dest='mongo_url',
-                        help=f'mongo url for writing logs [no default, no logging to mongo]', type=str, required=False)
-    parser.add_argument('-pubT', '--public_transport_endpoint', action='store', dest='public_transport_endpoint',
-                        help=f'endpoint for getting public transport polygons [default: {public_transport_endpoint}]', type=str)
-    parser.add_argument('-perT', '--personal_transport_endpoint', action='store', dest='personal_transport_endpoint',
-                        help=f'endpoint for getting personal transport polygons [default: {personal_transport_endpoint}]', type=str)
-    parser.add_argument('-wlkT', '--walking_endpoint', action='store', dest='walking_endpoint',
-                        help=f'endpoint for getting walking polygons [default: {walking_endpoint}]', type=str)
-    parser.add_argument('-p', '--port', action='store', dest='api_port',
-                        help=f'postgres port number [default: {api_port}]', type=int)
-    parser.add_argument('-D', '--debug', action='store_true', dest='debug', help=f'debug trigger')
-    parser.add_argument('-nDE', '--no_db_endpoints', action='store_true', dest='no_db_endpoints',
-            help=f'disable select endpoint (due to security or other reasons)')
-    args = parser.parse_args()
-
-    if args.houses_db_addr is not None:
-        houses_properties.db_addr = args.houses_db_addr
-    if args.houses_db_port is not None:
-        houses_properties.db_port = args.houses_db_port
-    if args.houses_db_name is not None:
-        houses_properties.db_name = args.houses_db_name
-    if args.houses_db_user is not None:
-        houses_properties.db_user = args.houses_db_user
-    if args.houses_db_pass is not None:
-        houses_properties.db_pass = args.houses_db_pass
-    if args.provision_db_addr is not None:
-        provision_properties.db_addr = args.provision_db_addr
-    if args.provision_db_port is not None:
-        provision_properties.db_port = args.provision_db_port
-    if args.provision_db_name is not None:
-        provision_properties.db_name = args.provision_db_name
-    if args.provision_db_user is not None:
-        provision_properties.db_user = args.provision_db_user
-    if args.provision_db_pass is not None:
-        provision_properties.db_pass = args.provision_db_pass
-    if args.default_city is not None:
-        default_city = args.default_city
-    if args.public_transport_endpoint is not None:
-        public_transport_endpoint = args.public_transport_endpoint
-    if args.personal_transport_endpoint is not None:
-        personal_transport_endpoint = args.personal_transport_endpoint
-    if args.walking_endpoint is not None:
-        walking_endpoint = args.walking_endpoint
-    if args.api_port is not None:
-        api_port = args.api_port
-    if args.no_db_endpoints:
-        enable_db_endpoints = False
-    if args.mongo_url is not None:
-        mongo_url = args.mongo_url
+    houses_properties = Properties(houses_db_addr, houses_db_port, houses_db_name, houses_db_user, houses_db_pass)
+    provision_properties = Properties(provision_db_addr, provision_db_port, provision_db_name, provision_db_user, provision_db_pass)
 
     logger.remove()
-    logger.add(sys.stderr, format='api <level>[{level}]</level> - <blue>{time:YY-MM-DD HH:mm:ss}</blue>: {message}', level='INFO' if not args.debug else 'DEBUG',
+    logger.add(sys.stderr, format='api <level>[{level}]</level> - <blue>{time:YY-MM-DD HH:mm:ss}</blue>: {message}', level='INFO' if not debug else 'DEBUG',
             filter=lambda record: 'request' not in record['extra'], colorize=True)
 
     logger.add(sys.stderr,
             format='api <level>[{level}]</level> - <blue>{time:YY-MM-DD HH:mm:ss}</blue>:' \
                     ' <yellow>{extra[user]} {extra[method]}</yellow> {extra[endpoint]} <cyan>({extra[handler]})</cyan>: <blue>{message}</blue>',
-            level='INFO' if not args.debug else 'DEBUG', filter=lambda record: 'request' in record['extra'], colorize=True)
+            level='INFO' if not debug else 'DEBUG', filter=lambda record: 'request' in record['extra'], colorize=True)
 
     if mongo_url is not None:
         if ':' not in mongo_url or '@' not in mongo_url:
@@ -1689,13 +1611,13 @@ if __name__ == '__main__':
             public_mongo_url = mongo_url[:mongo_url.find(':')] + mongo_url[mongo_url.find('@'):]
         try:
             from mongolog import MongoHandler
-            mongo_handler = MongoHandler(mongo_url, "provision_api", level='INFO' if not args.debug else 'DEBUG')
+            mongo_handler = MongoHandler(mongo_url, "provision_api", level='INFO' if not debug else 'DEBUG')
             logger.add(mongo_handler, filter=lambda record: 'request' in record['extra'])
             logger.info(f'Attached mongo logger at {public_mongo_url}')
         except Exception as ex:
             logger.error(f'Could not attach required mongo database (url: {public_mongo_url}) for logging: {ex!r}')
 
-    if enable_db_endpoints:
+    if not no_db_endpoints:
         try:
             from io import BytesIO, StringIO
 
@@ -1714,7 +1636,7 @@ if __name__ == '__main__':
                     geometry_column = None
                 df = saver.Query.select(houses_properties.conn, request.args['query'])
                 buffer = StringIO() if format != 'xlsx' else BytesIO()
-                saver.Save.to_buffer(df, buffer, format, geometry_column) # type: ignore # TODO : make buffer Union[TextIO, BinaryIO] in saver
+                saver.Save.to_buffer(df, buffer, format, geometry_column)
                 response = make_response(buffer.getvalue()) # type: ignore
                 response.headers['Content-Type'] = 'application/json' if format in ('json', 'geojson') else \
                         'text/csv' if format == 'csv' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if format == 'xlsx' \
@@ -1737,15 +1659,33 @@ if __name__ == '__main__':
                     df = saver.DatabaseDescription.get_table_description(cur, f'{schema}.{table}')
                 return make_response(jsonify(list(df.transpose().to_dict().values())))
 
+            logger.add('provision_api.log', rotation='5Mb', encoding='utf-8',
+                    format='[{level}] - {time:YY-MM-DD HH:mm:ss}: {message}',
+                    level='INFO' if not debug else 'DEBUG',
+                    filter=lambda record: 'request' not in record['extra'])
+
+            logger.add('provision_api.log', rotation='5Mb', encoding='utf-8',
+                    format='[{level}] - {time:YY-MM-DD HH:mm:ss}:' \
+                            ' {extra[user]} {extra[method]} {extra[endpoint]} ({extra[handler]}): {message}',
+                    level='INFO' if not debug else 'DEBUG', filter=lambda record: 'request' in record['extra'])
+
+            @app.route('/api/logs')
+            @app.route('/api/logs/')
+            @logged
+            def logs() -> Response:
+                with open('provision_api.log', 'rt', encoding='utf-8') as f:
+                    res =  make_response(f.read())
+                    res.headers['Content-Type'] = 'text/plain'
+                    return res
+
         except Exception as ex:
             logger.error(f'db_endpoints were not disabled, but loading failed: {ex}')
 
-    
     logger.info('Getting global data')
 
     update_global_data()
 
-    logger.opt(colors=True).info(f'Starting application on 0.0.0.0:{api_port} with houses DB as'
+    logger.opt(colors=True).info(f'Starting application on 0.0.0.0:{port} with houses DB as'
             f' (<magenta>{houses_properties.db_user}@{houses_properties.db_addr}:{houses_properties.db_port}/{houses_properties.db_name}</magenta>) and provision DB as'
             f' (<magenta>{provision_properties.db_user}@{provision_properties.db_addr}:{provision_properties.db_port}/{provision_properties.db_name}</magenta>)')
 
@@ -1753,16 +1693,21 @@ if __name__ == '__main__':
             f' personal_transport endpoint = <green>"{personal_transport_endpoint}"</green>,'
             f' walking endpoint = <green>"{walking_endpoint}"</green>')
     collect_geom = collect_geometry.CollectGeometry(provision_properties.conn, public_transport_endpoint, personal_transport_endpoint,
-            walking_endpoint, raise_exceptions=True, download_geometry_after_timeout=True)
+            walking_endpoint, use_alternative_personal_transport=True, use_alternative_public_transport=True,
+            raise_exceptions=True, download_geometry_after_timeout=True, cities_codes={'Санкт-Петербург': 'Saint-Petersburg'})
 
-    if args.debug:
-        app.run(host='0.0.0.0', port=api_port, debug=args.debug)
+    if debug:
+        app.run(host='0.0.0.0', port=port, debug=debug)
     else:
         import gevent.pywsgi
 
-        app_server = gevent.pywsgi.WSGIServer(('0.0.0.0', api_port), app)
+        app_server = gevent.pywsgi.WSGIServer(('0.0.0.0', port), app)
         try:
             app_server.serve_forever()
         except KeyboardInterrupt:
             app_server.stop()
     logger.info('Finishing the provision_api server')
+
+
+if __name__ == '__main__':
+    main()

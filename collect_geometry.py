@@ -1,42 +1,35 @@
 import threading
-from typing import Any, Callable, Dict, List, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import psycopg2
 import requests
+from loguru import logger
 
 try:
     import simplejson as json
 except ModuleNotFoundError:
-    import json # type: ignore
-
-import logging
-
-log = logging.getLogger(__name__)
-log.addHandler(logging.StreamHandler())
-log.handlers[-1].setFormatter(logging.Formatter(fmt='CollectGeometry [{levelname}] - {asctime}: {message}', datefmt='%Y-%m-%d %H:%M:%S', style='{'))
-log.handlers[-1].setLevel('INFO')
-log.setLevel('INFO')
+    import json  # type: ignore
 
 def _execute_after(func: Callable[[], Any], log_text: str) -> threading.Thread:
     def f() -> None:
-        log.info(f'Launching {log_text} in thread {threading.get_ident()}')
+        logger.info(f'Launching {log_text} in thread {threading.get_ident()}')
         try:
             func()
         except Exception as ex:
-            log.error(f'Error on {log_text} in thread {threading.get_ident()}: {ex:r}')
+            logger.error(f'Error on {log_text} in thread {threading.get_ident()}: {ex:r}')
         else:
-            log.info(f'Finished  {log_text} in thread {threading.get_ident()}')
+            logger.info(f'Finished  {log_text} in thread {threading.get_ident()}')
     thread = threading.Thread(target=f)
     thread.start()
     return thread
 
-def _get_public_transport_internal(latitude: float, longitude: float, t: Union[int, List[int]], conn: psycopg2.extensions.connection,
+def _get_public_transport_internal(latitude: float, longitude: float, t: Union[int, List[int]], conn: 'psycopg2.connection', _city: str,
         public_transport_endpoint: str, timeout: int = 240) -> Union[Dict[str, Any], Dict[int, Dict[str, Any]]]:
     if isinstance(t, int):
         times = [t]
-    result: Union[Dict[str, Any], Dict[int, Dict[str, Any]]]
-    if len(times) > 1:
-        result = {} # type: ignore
+    else:
+        times = t
+    result: Union[Dict[str, Any], Dict[int, Dict[str, Any]]] = {} # type: ignore
     with conn.cursor() as cur:
         for t_cur in times:
             data = requests.post(public_transport_endpoint, timeout=timeout, headers={'Accept-encoding': 'gzip,deflat'}, json=
@@ -48,11 +41,11 @@ def _get_public_transport_internal(latitude: float, longitude: float, t: Union[i
                 }
             ).json()
             if 'features' not in data:
-                log.error(f'Public transport download ({latitude}, {longitude}, {t}) failed: "features" is not found in data from transport model service'
+                logger.error(f'Public transport download ({latitude}, {longitude}, {t}) failed: "features" is not found in data from transport model service'
                         f' ({public_transport_endpoint}\ndata:\n{data}')
                 geom = {'type': 'Polygon', 'coordinates': []}
             if len(data['features']) == 0:
-                log.warning(f'Public transport download ({latitude}, {longitude}, {t}) : "features" is empty')
+                logger.warning(f'Public transport download ({latitude}, {longitude}, {t}) : "features" is empty')
                 geom = {'type': 'Polygon', 'coordinates': []}
             elif len(data['features']) > 1:
                 cur.execute('SELECT ST_AsGeoJSON(ST_UNION(ARRAY[' + ',\n'.join(map(lambda x: f'ST_GeomFromGeoJSON(\'{json.dumps(x["geometry"])}\')',
@@ -72,22 +65,22 @@ def _get_public_transport_internal(latitude: float, longitude: float, t: Union[i
         conn.commit()
     return result
 
-def _get_public_transport_alternative_internal(latitude: float, longitude: float, t: Union[int, List[int]], conn: psycopg2.extensions.connection,
-        public_transport_endpoint: str, timeout: int = 240) -> Union[Dict[str, Any], Dict[int, Dict[str, Any]]]:
+def _get_transport_alternative_internal(latitude: float, longitude: float, t: Union[int, List[int]], conn: 'psycopg2.connection',
+        city: str, transport_endpoint: str, timeout: int = 240) -> Union[Dict[str, Any], Dict[int, Dict[str, Any]]]:
     if isinstance(t, int):
         times = [t]
-    result: Union[Dict[str, Any], Dict[int, Dict[str, Any]]]
-    if len(times) > 1:
-        result = {} # type: ignore
+    else:
+        times = t
+    result: Union[Dict[str, Any], Dict[int, Dict[str, Any]]] = {} # type: ignore
     with conn.cursor() as cur:
         for t_cur in times:
-            data = requests.get(public_transport_endpoint.format(latitude=latitude, longitude=longitude, time=t_cur), timeout=timeout, headers={'Accept-encoding': 'gzip,deflat'}).json()
+            data = requests.get(transport_endpoint.format(latitude=latitude, longitude=longitude, time=t_cur, city=city), timeout=timeout, headers={'Accept-encoding': 'gzip,deflat'}).json()
             if 'features' not in data:
-                log.error(f'Public transport download ({latitude}, {longitude}, {t}) failed: "features" is not found in data from new transport model service'
-                        f' ({public_transport_endpoint}\ndata:\n{data}')
+                logger.error(f'Public transport download ({latitude}, {longitude}, {t}) failed: "features" is not found in data from new transport model service'
+                        f' ({transport_endpoint}\ndata:\n{data}')
                 geom = {'type': 'Polygon', 'coordinates': []}
             if len(data['features']) == 0:
-                log.warning(f'Public transport download ({latitude}, {longitude}, {t}) : "features" is empty in new transport model')
+                logger.warning(f'Public transport download ({latitude}, {longitude}, {t}) : "features" is empty in new transport model')
                 geom = {'type': 'Polygon', 'coordinates': []}
             elif len(data['features']) > 1:
                 cur.execute('SELECT ST_AsGeoJSON(ST_UNION(ARRAY[' + ',\n'.join(map(lambda x: f'ST_GeomFromGeoJSON(\'{json.dumps(x["geometry"])}\')',
@@ -107,13 +100,13 @@ def _get_public_transport_alternative_internal(latitude: float, longitude: float
         conn.commit()
     return result
 
-def _get_personal_transport_internal(latitude: float, longitude: float, t: Union[int, List[int]], conn: psycopg2.extensions.connection,
-        personal_transport_endpoint: str, timeout: int = 240) -> Union[Dict[str, Any], Dict[int, Dict[str, Any]]]:
+def _get_personal_transport_internal(latitude: float, longitude: float, t: Union[int, List[int]], conn: 'psycopg2.connection',
+        _city: str, personal_transport_endpoint: str, timeout: int = 240) -> Union[Dict[str, Any], Dict[int, Dict[str, Any]]]:
     if isinstance(t, int):
         times = [t]
-    result: Union[Dict[str, Any], Dict[int, Dict[str, Any]]]
-    if len(times) > 1:
-        result = {} # type: ignore
+    else:
+        times = t
+    result: Union[Dict[str, Any], Dict[int, Dict[str, Any]]] = {} # type: ignore
     with conn.cursor() as cur:
         for t_cur in times:
             data = requests.post(personal_transport_endpoint, timeout=timeout, headers={'Accept-encoding': 'gzip,deflat'}, json=
@@ -125,14 +118,14 @@ def _get_personal_transport_internal(latitude: float, longitude: float, t: Union
                 }
             ).json()
             if 'features' not in data:
-                log.error(f'Personal transport download ({latitude}, {longitude}, {t}) failed: "features" is not found in data from transport model service'
+                logger.error(f'Personal transport download ({latitude}, {longitude}, {t}) failed: "features" is not found in data from transport model service'
                         f' ({personal_transport_endpoint}\ndata:\n{data}')
                 geom = {'type': 'Polygon', 'coordinates': []}
             if len(data['features']) == 0:
-                log.warning(f'Personal transport download ({latitude}, {longitude}, {t}) : "features" is empty')
+                logger.warning(f'Personal transport download ({latitude}, {longitude}, {t}) : "features" is empty')
                 geom = {'type': 'Polygon', 'coordinates': []}
             elif len(data['features']) > 1:
-                log.warning(f'Personal transport availability has more than 1 ({len(data["features"])}) poly: ({latitude}, {longitude}, {t_cur})')
+                logger.warning(f'Personal transport availability has more than 1 ({len(data["features"])}) poly: ({latitude}, {longitude}, {t_cur})')
                 cur.execute('SELECT ST_AsGeoJSON(ST_UNION(ARRAY[' + ',\n'.join(map(lambda x: f'ST_GeomFromGeoJSON(\'{json.dumps(x["geometry"])}\')',
                         data['features'])) + '])) LIMIT 1')
                 geom = json.loads(cur.fetchone()[0])
@@ -150,10 +143,12 @@ def _get_personal_transport_internal(latitude: float, longitude: float, t: Union
         conn.commit()
     return result
 
-def _get_walking_internal(latitude: float, longitude: float, t: Union[int, List[int]], conn: psycopg2.extensions.connection,
+def _get_walking_internal(latitude: float, longitude: float, t: Union[int, List[int]], conn: 'psycopg2.connection', _city: str,
         walking_endpoint: str, timeout: int = 360, multiple_times_allowed: bool = False) -> Union[Dict[str, Any], Dict[int, Dict[str, Any]]]:
     if isinstance(t, int):
         times = [t]
+    else:
+        times = t
     result: Union[Dict[str, Any], Dict[int, Dict[str, Any]]]
     if multiple_times_allowed:
         if isinstance(t, int):
@@ -176,7 +171,7 @@ def _get_walking_internal(latitude: float, longitude: float, t: Union[int, List[
     with conn.cursor() as cur:
         if isinstance(t, int):
             cur.execute('INSERT INTO walking (latitude, longitude, time, geometry) VALUES'
-                    ' (%s, %s, %s, ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326))',
+                    ' (%s, %s, %s, ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326))'
                     ' ON CONFLICT (latitude, longitude, time) DO UPDATE SET geometry=excluded.geometry',
                         (latitude, longitude, times[0], json.dumps(result)))
         else:
@@ -189,11 +184,11 @@ def _get_walking_internal(latitude: float, longitude: float, t: Union[int, List[
         conn.commit()
     return result
 
-def get_public_transport(latitude: float, longitude: float, t: int, conn: psycopg2.extensions.connection, public_transport_endpoint: str, timeout: int = 20,
-        raise_exceptions: bool = False,
-        get_public_transport_internal: Callable[[float, float, Union[int, List[int]], psycopg2.extensions.connection, str, int],
+def get_public_transport(latitude: float, longitude: float, t: int, conn: 'psycopg2.connection',
+        public_transport_endpoint: str, city: Optional[str] = None, timeout: int = 20, raise_exceptions: bool = False,
+        get_public_transport_internal: Callable[[float, float, Union[int, List[int]], 'psycopg2.connection', str, str, int],
                 Union[Dict[str, Any], Dict[int, Dict[str, Any]]]] = _get_public_transport_internal,
-                download_geometry_after_timeout: bool = False) -> Dict[str, Any]:
+        download_geometry_after_timeout: bool = False) -> Dict[str, Any]:
     latitude, longitude = round(latitude, 6), round(longitude, 6)
     with conn.cursor() as cur:
         cur.execute('SELECT ST_AsGeoJSON(geometry) FROM transport WHERE latitude = %s AND longitude = %s AND time = %s', (latitude, longitude, t))
@@ -204,12 +199,12 @@ def get_public_transport(latitude: float, longitude: float, t: int, conn: psycop
             return get_public_transport_internal(latitude, longitude, t, conn, public_transport_endpoint, timeout) # type: ignore
         except (requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout) as ex:
             if download_geometry_after_timeout:
-                _execute_after(lambda: _get_public_transport_internal(latitude, longitude, t, conn, public_transport_endpoint, timeout * 20),
+                _execute_after(lambda: _get_public_transport_internal(latitude, longitude, t, conn, public_transport_endpoint, city or '', timeout * 20),
                         f'public_transport_download ({latitude}, {longitude}, {t})')
             if raise_exceptions:
                 raise TimeoutError(ex)
             else:
-                log.warning(f'Public transport geometry download ({latitude}, {longitude}, {t}) failed with timeout')
+                logger.warning(f'Public transport geometry download ({latitude}, {longitude}, {t}) failed with timeout')
             cur.execute('SELECT ST_AsGeoJSON(geometry) FROM transport WHERE time = %s'
                     ' ORDER BY ST_Distance(geometry, ST_SetSRID(ST_MakePoint(%s, %s), 4326)) LIMIT 1', (latitude, longitude, t))
             res = cur.fetchone()
@@ -219,11 +214,13 @@ def get_public_transport(latitude: float, longitude: float, t: int, conn: psycop
         except Exception as ex:
             if raise_exceptions:
                 raise
-            log.error(f'Public transport download ({latitude}, {longitude}, {t}) failed (exception): {repr(ex)}')
+            logger.error(f'Public transport download ({latitude}, {longitude}, {t}) failed (exception): {repr(ex)}')
             return {'type': 'Polygon', 'coordinates': []}
 
-def get_personal_transport(latitude: float, longitude: float, t: int, conn: psycopg2.extensions.connection, personal_transport_endpoint: str, timeout: int = 20,
-        raise_exceptions: bool = False,
+def get_personal_transport(latitude: float, longitude: float, t: int, conn: 'psycopg2.connection',
+        personal_transport_endpoint: str, city: Optional[str] = None, timeout: int = 20, raise_exceptions: bool = False,
+        get_personal_transport_internal: Callable[[float, float, Union[int, List[int]], 'psycopg2.connection', str, str, int],
+                Union[Dict[str, Any], Dict[int, Dict[str, Any]]]] = _get_personal_transport_internal,
         download_geometry_after_timeout: bool = False) -> Dict[str, Any]:
     latitude, longitude = round(latitude, 6), round(longitude, 6)
     with conn.cursor() as cur:
@@ -232,16 +229,16 @@ def get_personal_transport(latitude: float, longitude: float, t: int, conn: psyc
         if res is not None:
             return json.loads(res[0])
         try:
-            return _get_personal_transport_internal(latitude, longitude, t, conn, personal_transport_endpoint, timeout) # type: ignore
+            return get_personal_transport_internal(latitude, longitude, t, conn, personal_transport_endpoint, timeout) # type: ignore
         except (requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout) as ex:
             if download_geometry_after_timeout:
                 if download_geometry_after_timeout:
-                    _execute_after(lambda: _get_personal_transport_internal(latitude, longitude, t, conn, personal_transport_endpoint, timeout * 20),
+                    _execute_after(lambda: _get_personal_transport_internal(latitude, longitude, t, conn, personal_transport_endpoint, city or '', timeout * 20),
                             f'personal_transport_download ({latitude}, {longitude}, {t})')
             if raise_exceptions:
                 raise TimeoutError(ex)
             else:
-                log.warning(f'Personal transport geometry download ({latitude}, {longitude}, {t}) failed with timeout')
+                logger.warning(f'Personal transport geometry download ({latitude}, {longitude}, {t}) failed with timeout')
             cur.execute('SELECT ST_AsGeoJSON(geometry) FROM car WHERE time = %s'
                     ' ORDER BY ST_Distance(geometry, ST_SetSRID(ST_MakePoint(%s, %s), 4326)) LIMIT 1', (latitude, longitude, t))
             res = cur.fetchone()
@@ -249,13 +246,13 @@ def get_personal_transport(latitude: float, longitude: float, t: int, conn: psyc
                 return {'type': 'Polygon', 'coordinates': []}
             return json.loads(res[0])
         except Exception as ex:
-            log.error(f'Personal transport download ({latitude}, {longitude}, {t}) failed (exception): {repr(ex)}')
+            logger.error(f'Personal transport download ({latitude}, {longitude}, {t}) failed (exception): {repr(ex)}')
             if raise_exceptions:
                 raise
             return {'type': 'Polygon', 'coordinates': []}
 
-def get_walking(latitude: float, longitude: float, t: int, conn: psycopg2.extensions.connection, walking_endpoint: str,
-        timeout: int = 20, multiple_times_allowed: bool = False, raise_exceptions: bool = False,
+def get_walking(latitude: float, longitude: float, t: int, conn: 'psycopg2.connection', walking_endpoint: str,
+        city: Optional[str] = None, timeout: int = 20, multiple_times_allowed: bool = False, raise_exceptions: bool = False,
         download_geometry_after_timeout: bool = False) -> Dict[str, Any]:
     latitude, longitude = round(latitude, 6), round(longitude, 6)
     with conn.cursor() as cur:
@@ -267,19 +264,19 @@ def get_walking(latitude: float, longitude: float, t: int, conn: psycopg2.extens
             return _get_walking_internal(latitude, longitude, t, conn, walking_endpoint, timeout, multiple_times_allowed) # type: ignore
         except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout) as ex:
             if download_geometry_after_timeout:
-                thread = threading.Thread(target=lambda: _get_walking_internal(latitude, longitude, t, conn, walking_endpoint, timeout * 20))
+                thread = threading.Thread(target=lambda: _get_walking_internal(latitude, longitude, t, conn, walking_endpoint, city or '', timeout * 20))
                 thread.start()
             if raise_exceptions:
                 raise TimeoutError(ex)
             else:
-                log.warning(f'Walking geometry download ({latitude}, {longitude}, {t}) failed with timeout')
+                logger.warning(f'Walking geometry download ({latitude}, {longitude}, {t}) failed with timeout')
             return {'type': 'Polygon', 'coordinates': []}
         except Exception as ex:
             if raise_exceptions:
                 raise
             else:
-                log.warning(f'Walking geometry download ({latitude}, {longitude}, {t}) failed with exception: {repr(ex)}')
-            log.error(f'Walking geometry download for ({latitude}, {longitude}, {t}) failed: {repr(ex)}')
+                logger.warning(f'Walking geometry download ({latitude}, {longitude}, {t}) failed with exception: {repr(ex)}')
+            logger.error(f'Walking geometry download for ({latitude}, {longitude}, {t}) failed: {repr(ex)}')
             cur.execute('SELECT ST_AsGeoJSON(geometry), ST_Distance(geometry, ST_SetSRID(ST_MakePoint(%s, %s), 4326)) AS min_distance'
                     'FROM walking WHERE time = %s ORDER BY 2 LIMIT 1', (latitude, longitude, t))
             res = cur.fetchone()
@@ -288,15 +285,25 @@ def get_walking(latitude: float, longitude: float, t: int, conn: psycopg2.extens
             return json.loads(res[0])
 
 class CollectGeometry:
-    def __init__(self, conn: psycopg2.extensions.connection, public_transport_endpoint: str,
+    def __init__(self, conn: 'psycopg2.connection', public_transport_endpoint: str,
             personal_transport_endpoint: str, walking_endpoint: str, walking_endpoint_allow_multiple_times: bool = False,
             timeout: int = 20, raise_exceptions: bool = False, download_geometry_after_timeout: bool = False,
-            get_public_transport_func: Callable[[float, float, int, psycopg2.extensions.connection, str, int, bool,
-                    Callable[[float, float, Union[int, List[int]], psycopg2.extensions.connection, str, int],
-                    Union[Dict[str, Any], Dict[int, Dict[str, Any]]]], bool], Dict[str, Any]] = get_public_transport,
-            get_personal_transport_func: Callable[[float, float, int, psycopg2.extensions.connection, str, int, bool, bool], Dict[str, Any]] = get_personal_transport,
-            get_walking_func: Callable[[float, float, int, psycopg2.extensions.connection, str, int, bool, bool, bool], Dict[str, Any]] = get_walking,
-            use_alternative_public_transport = False
+            get_public_transport_func: Callable[
+                    [float, float, int, 'psycopg2.connection', str, Optional[str], int, bool,
+                        Callable[[float, float, Union[int, List[int]], 'psycopg2.connection', str, str, int],
+                            Union[Dict[str, Any], Dict[int, Dict[str, Any]]]
+                        ],
+                    bool],
+                Dict[str, Any]] = get_public_transport,
+            get_personal_transport_func: Callable[
+                    [float, float, int, 'psycopg2.connection', str, Optional[str], int, bool,
+                        Callable[[float, float, Union[int, List[int]], 'psycopg2.connection', str, str, int],
+                            Union[Dict[str, Any], Dict[int, Dict[str, Any]]]
+                        ],
+                    bool],
+                Dict[str, Any]] = get_personal_transport,
+            get_walking_func: Callable[[float, float, int, 'psycopg2.connection', str, Optional[str], int, bool, bool, bool], Dict[str, Any]] = get_walking,
+            use_alternative_public_transport: bool = False, use_alternative_personal_transport: bool = False, cities_codes: Optional[Dict[str, str]] = None
         ):
         self.conn = conn
         self.public_transport_endpoint = public_transport_endpoint
@@ -310,26 +317,34 @@ class CollectGeometry:
         self.get_public_transport_func = get_public_transport_func
         self.get_walking_func = get_walking_func
         if use_alternative_public_transport:
-            self.public_transport_internal = _get_public_transport_internal
+            assert cities_codes is not None, 'cities_codes must be passed to use alternative public transpor model'
+            self.public_transport_internal = _get_transport_alternative_internal
         else:
-            self.public_transport_internal = _get_public_transport_alternative_internal
+            self.public_transport_internal = _get_public_transport_internal # type: ignore
+        if use_alternative_personal_transport:
+            assert cities_codes is not None, 'cities_codes must be passed to use alternative personal transpor model'
+            self.personal_transport_internal = _get_transport_alternative_internal
+        else:
+            self.personal_transport_internal = _get_personal_transport_internal # type: ignore
+        self.cities_codes = cities_codes
 
-    def get_walking(self, latitude: float, longitude: float, t: int) -> Dict[str, Any]:
-        return self.get_walking_func(latitude, longitude, t, self.conn, self.walking_endpoint, self.timeout,
+    def get_walking(self, latitude: float, longitude: float, t: int, city: Optional[str] = None) -> Dict[str, Any]:
+        return self.get_walking_func(latitude, longitude, t, self.conn, self.walking_endpoint, city, self.timeout,
                 self.walking_endpoint_allow_multiple_times, self.raise_exceptions, self.download_geometry_after_timeout)
 
-    def get_public_transport(self, latitude: float, longitude: float, t: int) -> Dict[str, Any]:
+    def get_public_transport(self, latitude: float, longitude: float, t: int, city: Optional[str] = None) -> Dict[str, Any]:
         return self.get_public_transport_func(latitude, longitude, t, self.conn, self.public_transport_endpoint,
-                self.timeout, self.raise_exceptions, self.public_transport_internal, self.download_geometry_after_timeout)
+                city, self.timeout, self.raise_exceptions, self.public_transport_internal, self.download_geometry_after_timeout)
 
-    def get_personal_transport(self, latitude: float, longitude: float, t: int) -> Dict[str, Any]:
+    def get_personal_transport(self, latitude: float, longitude: float, t: int, city: Optional[str] = None) -> Dict[str, Any]:
         return self.get_personal_transport_func(latitude, longitude, t, self.conn, self.public_transport_endpoint,
-                self.timeout, self.raise_exceptions, self.download_geometry_after_timeout)
+                city, self.timeout, self.raise_exceptions, self.personal_transport_internal, self.download_geometry_after_timeout)
 
 # walking_urbica = 'https://galton.urbica.co/api/foot/?lng={x}&lat={y}&radius=5&cellSize=0.1&intervals={t}'
-# walking_local = 'http://10.32.1.62:5002/pedastrian_walk/isochrones?x_from={lng}&y_from={lat}&times={t}'
+# walking_local = 'http://10.32.1.65:5000/mobility_analysis/isochrones?x_from={latitude}&y_from={longitude}&travel_type=walk&times={time}&city={city}'
 
-# public_transport_new = 'http://10.32.1.62:5000/mobility_analysis/isochrones?x_from={latitude}&y_from={longitude}&travel_time={time}&travel_type=public_transport'
+# public_transport_new = 'http://10.32.1.62:5000/mobility_analysis/isochrones?x_from={latitude}&y_from={longitude}&travel_time={time}&city={city}&travel_type=public_transport'
+# personal_transport_new = 'http://10.32.1.62:5000/mobility_analysis/isochrones?x_from={latitude}&y_from={longitude}&travel_time={time}&city={city}&travel_type=personal_transport'
 
 # public_transport_local = 'http://10.32.1.61:8080/api.v2/isochrones'
 # personal_transport_local = 'http://10.32.1.61:8080/api.v2/isochrones'
