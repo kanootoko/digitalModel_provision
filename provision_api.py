@@ -1,4 +1,5 @@
 import itertools
+import os
 import sys
 import time
 import traceback
@@ -27,11 +28,11 @@ def logged(func: Callable[..., Response]):
             t = time.time() - start_time
             if res.status_code != 200:
                 if res.status_code == 500:
-                    request_logger.error(f'Fail({res.status_code}) - execution took {t * 1000}ms')
+                    request_logger.error(f'Fail({res.status_code}) - execution took {t * 1000:.3}ms')
                 elif 400 < res.status_code < 500:
-                    request_logger.error(f'Wrong request({res.status_code}) - execution took {t * 1000}ms')
+                    request_logger.error(f'Wrong request({res.status_code}) - execution took {t * 1000:.3}ms')
                 else:
-                    request_logger.error(f'Error({res.status_code}) - execution took {t * 1000}ms')
+                    request_logger.error(f'Error({res.status_code}) - execution took {t * 1000:.3}ms')
             return res
     wrapper.__name__ = f'{func.__name__}_wrapper'
     return wrapper
@@ -66,7 +67,7 @@ class Properties:
             self._conn.close()
 
 houses_properties: Properties
-provision_properties: Properties
+isochrones_properties: Properties
 
 needs: pd.DataFrame
 infrastructure: pd.DataFrame
@@ -90,6 +91,7 @@ provision_blocks: Dict[str, pd.DataFrame] = {}
 
 default_city: str = ''
 collect_geom: collect_geometry.CollectGeometry
+cities_codes: Dict[str, str]
 
 def update_global_data() -> None:
     global needs
@@ -102,6 +104,13 @@ def update_global_data() -> None:
     global provision_blocks
     global cities_service_types
     global city_division_type
+    global cities_codes
+
+    cities_codes = {
+        'Санкт-Петербург': 'Saint_Petersburg',
+        'Краснодар': 'Krasnodar',
+        'Севастополь': 'Sevastopol'
+    }
     with houses_properties.conn, houses_properties.conn.cursor() as cur:
         cur.execute('SELECT it.id, it.name, it.code, cf.id, cf.name, cf.code, st.id, st.name, st.code FROM city_functions cf'
                 '   JOIN city_infrastructure_types it ON cf.city_infrastructure_type_id = it.id'
@@ -706,7 +715,7 @@ def list_city_hierarchy() -> Response:
 @logged
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2022-04-08',
+        'version': '2022-04-14',
         '_links': {
             'self': {
                 'href': request.full_path
@@ -912,13 +921,13 @@ def service_availability_zone(service_id: int) -> Response:
     error: Optional[str] = None
     status = 200
     with houses_properties.conn, houses_properties.conn.cursor() as cur:
-        cur.execute('SELECT ST_X(center), ST_Y(center), city_service_type_id, city_service_type FROM all_services WHERE functional_object_id = %s', (service_id,))
+        cur.execute('SELECT ST_X(center), ST_Y(center), city_service_type_id, city_service_type, city FROM all_services WHERE functional_object_id = %s', (service_id,))
         res = cur.fetchone()
         if res is None:
             error = f'service with id = {service_id} is not found'
             status = 404
         else:
-            lat, lng, service_type_id, service_type = res
+            lat, lng, service_type_id, service_type, city = res
             cur.execute('SELECT radius_meters, public_transport_time FROM provision.normatives WHERE city_service_type_id = %s', (service_type_id,))
             res = cur.fetchone()
             if res is None:
@@ -928,16 +937,16 @@ def service_availability_zone(service_id: int) -> Response:
                 radius, transport = res
                 if transport is None:
                     cur.execute('SELECT ST_AsGeoJSON(ST_Buffer(ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s), 6)', (lat, lng, radius))
-                    geometry = json.loads(cur.fetchone()[0])
+                    geometry = json.loads(cur.fetchone()[0]) # type: ignore
                 else:
                     try:
-                        geometry = collect_geom.get_public_transport(lat, lng, transport)
+                        geometry = collect_geom.get_public_transport(lat, lng, transport, cities_codes.get(city))
                     except TimeoutError:
                         error = f'Timeout on public_transport_service, try later'
                         status = 408
                     except Exception as ex:
                         error = f'Error on public_transport_service: {ex}'
-                        logger.error(f'Getting public_transport geometry failed: {ex:r}')
+                        logger.error(f'Getting public_transport geometry failed: {ex!r}')
                         status = 500
     if error is not None:
         return make_response(jsonify({
@@ -970,13 +979,13 @@ def house_availability_zone(house_id: int) -> Response:
     else:
         service_type_id = get_parameter_of_request(request.args['service_type'], 'service_type', 'id')
         with houses_properties.conn, houses_properties.conn.cursor() as cur:
-            cur.execute('SELECT ST_X(center), ST_Y(center) FROM houses WHERE functional_object_id = %s', (house_id,))
+            cur.execute('SELECT ST_X(center), ST_Y(center), city FROM all_houses WHERE functional_object_id = %s', (house_id,))
             res = cur.fetchone()
             if res is None:
                 error = f'house with id = {house_id} is not found'
                 status = 404
             else:
-                lat, lng = res
+                lat, lng, city = res
                 cur.execute('SELECT radius_meters, public_transport_time FROM provision.normatives WHERE city_service_type_id = %s', (service_type_id,))
                 res = cur.fetchone()
                 if res is None:
@@ -986,16 +995,16 @@ def house_availability_zone(house_id: int) -> Response:
                     radius, transport = res
                     if transport is None:
                         cur.execute('SELECT ST_AsGeoJSON(ST_Buffer(ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s), 6)', (lat, lng, radius))
-                        geometry = json.loads(cur.fetchone()[0])
+                        geometry = json.loads(cur.fetchone()[0]) # type: ignore
                     else:
                         try:
-                            geometry = collect_geom.get_public_transport(lat, lng, transport)
+                            geometry = collect_geom.get_public_transport(lat, lng, transport, cities_codes.get(city))
                         except TimeoutError:
                             error = f'Timeout on public_transport_service, try later'
                             status = 408
                         except Exception as ex:
                             error = f'Error on public_transport_service: {ex}'
-                            logger.error(f'Getting public_transport geometry failed: {ex:r}')
+                            logger.error(f'Getting public_transport geometry failed: {ex!r}')
                             status = 500
     if error is not None:
         return make_response(jsonify({
@@ -1571,11 +1580,11 @@ def any_error(error: Exception):
 @click.option('-m', '--mongo_url', envvar='PROVISION_MONGO_URL', required=False,
         help='optional address of MongoDB for writing logs')
 @click.option('-pubT', '--public_transport_endpoint', envvar='PUBLIC_TRANSPORT_ENDPOINT',
-        default='http://10.32.1.62:5000/mobility_analysis/isochrones' \
+        default='http://10.32.1.65:5000/mobility_analysis/isochrones' \
                 '?x_from={latitude}&y_from={longitude}&travel_time={time}&city={city}&travel_type=public_transport',
         help='endpoint for getting public transport polygons')
 @click.option('-perT', '--personal_transport_endpoint', envvar='PERSONAL_TRANSPORT_ENDPOINT',
-        default='http://10.32.1.62:5000/mobility_analysis/isochrones' \
+        default='http://10.32.1.65:5000/mobility_analysis/isochrones' \
                 '?x_from={latitude}&y_from={longitude}&travel_time={time}&city={city}&travel_type=personal_transport',
         help='endpoint for getting personal transport polygons')
 @click.option('-wlkT', '--walking_endpoint', envvar='WALKING_ENDPOINT',
@@ -1589,11 +1598,11 @@ def main(port: int, houses_db_addr: str, houses_db_port: int, houses_db_name: st
         debug: bool, no_db_endpoints: bool):
     global collect_geom
     global houses_properties
-    global provision_properties
+    global isochrones_properties
     globals()['default_city'] = default_city
 
     houses_properties = Properties(houses_db_addr, houses_db_port, houses_db_name, houses_db_user, houses_db_pass)
-    provision_properties = Properties(provision_db_addr, provision_db_port, provision_db_name, provision_db_user, provision_db_pass)
+    isochrones_properties = Properties(provision_db_addr, provision_db_port, provision_db_name, provision_db_user, provision_db_pass)
 
     logger.remove()
     logger.add(sys.stderr, format='api <level>[{level}]</level> - <blue>{time:YY-MM-DD HH:mm:ss}</blue>: {message}', level='INFO' if not debug else 'DEBUG',
@@ -1641,6 +1650,7 @@ def main(port: int, houses_db_addr: str, houses_db_port: int, houses_db_name: st
                 response.headers['Content-Type'] = 'application/json' if format in ('json', 'geojson') else \
                         'text/csv' if format == 'csv' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if format == 'xlsx' \
                         else 'application/octet-stream'
+                response.headers['Content-Disposition'] = f'filename={time.strftime("%Y-%d-%m %H.%M.%S")}.{format}'
                 return response
             
             @app.route('/api/db/<schema>')
@@ -1659,12 +1669,12 @@ def main(port: int, houses_db_addr: str, houses_db_port: int, houses_db_name: st
                     df = saver.DatabaseDescription.get_table_description(cur, f'{schema}.{table}')
                 return make_response(jsonify(list(df.transpose().to_dict().values())))
 
-            logger.add('provision_api.log', rotation='5Mb', encoding='utf-8',
+            logger.add('provision_api.log', rotation='10Mb', encoding='utf-8',
                     format='[{level}] - {time:YY-MM-DD HH:mm:ss}: {message}',
                     level='INFO' if not debug else 'DEBUG',
                     filter=lambda record: 'request' not in record['extra'])
 
-            logger.add('provision_api.log', rotation='5Mb', encoding='utf-8',
+            logger.add('provision_api.log', rotation='10Mb', encoding='utf-8',
                     format='[{level}] - {time:YY-MM-DD HH:mm:ss}:' \
                             ' {extra[user]} {extra[method]} {extra[endpoint]} ({extra[handler]}): {message}',
                     level='INFO' if not debug else 'DEBUG', filter=lambda record: 'request' in record['extra'])
@@ -1675,7 +1685,44 @@ def main(port: int, houses_db_addr: str, houses_db_port: int, houses_db_name: st
             def logs() -> Response:
                 with open('provision_api.log', 'rt', encoding='utf-8') as f:
                     res =  make_response(f.read())
-                    res.headers['Content-Type'] = 'text/plain'
+                    res.headers['Content-Type'] = 'text/plain; charset=utf-8'
+                    return res
+
+            @app.route('/api/logs/<command>')
+            @app.route('/api/logs/<command>/')
+            @logged
+            def logs_cmd(command: str) -> Response:
+                logs_list = sorted(list(filter(lambda fname: fname.startswith('provision_api') and fname.endswith('.log'), os.listdir())))
+                if command in ('list'):
+                    return make_response(jsonify(logs_list))
+                elif command.isnumeric() or command[0] == '-' and command[1:].isnumeric():
+                    log_n = int(command)
+                    if log_n >= len(logs_list) or log_n <= -len(logs_list):
+                        return make_response(jsonify({'error': f'Log number {log_n} is out of range (-{len(logs_list) - 1} - {len(logs_list) - 1})'}), 400)
+                    else:
+                        fname = logs_list[log_n]
+                elif command in ('all', 'full'):
+                    logs_strs = []
+                    for fname in logs_list:
+                        with open(fname, 'rt', encoding='utf-8') as f:
+                            logs_strs.append(f.read())
+                    res = make_response(''.join(logs_strs))
+                    res.headers['Content-Type'] = 'text/plain; charset=utf-8'
+                    res.headers['Content-Disposition'] = f'filename=provision_api_{time.strftime("%Y-%d-%m %H.%M.%S")}.log'
+                    return res
+                elif command == 'delete':
+                    for fname in logs_list[:-1]:
+                        os.remove(fname)
+                    return make_response(jsonify({'result': 'ok', 'deleted': len(logs_list) - 1}))
+                else:
+                    if os.path.isfile(f'provision_api.{command}.log'):
+                        fname = f'provision_api.{command}.log'
+                    else:
+                        return make_response(jsonify({'error': f'Requested log (provision_api.{command}.log) is not found, try: /api/logs/list'}), 404)
+                with open(fname, 'rt', encoding='utf-8') as f:
+                    res =  make_response(f.read())
+                    res.headers['Content-Type'] = 'text/plain; charset=utf-8'
+                    res.headers['Content-Disposition'] = f'filename=provision_api_{time.strftime("%Y-%d-%m %H.%M.%S")}.log'
                     return res
 
         except Exception as ex:
@@ -1687,14 +1734,14 @@ def main(port: int, houses_db_addr: str, houses_db_port: int, houses_db_name: st
 
     logger.opt(colors=True).info(f'Starting application on 0.0.0.0:{port} with houses DB as'
             f' (<magenta>{houses_properties.db_user}@{houses_properties.db_addr}:{houses_properties.db_port}/{houses_properties.db_name}</magenta>) and provision DB as'
-            f' (<magenta>{provision_properties.db_user}@{provision_properties.db_addr}:{provision_properties.db_port}/{provision_properties.db_name}</magenta>)')
+            f' (<magenta>{isochrones_properties.db_user}@{isochrones_properties.db_addr}:{isochrones_properties.db_port}/{isochrones_properties.db_name}</magenta>)')
 
     logger.opt(colors=True).info(f'Public_ransport endpoint is set to <green>"{public_transport_endpoint}"</green>'
             f' personal_transport endpoint = <green>"{personal_transport_endpoint}"</green>,'
             f' walking endpoint = <green>"{walking_endpoint}"</green>')
-    collect_geom = collect_geometry.CollectGeometry(provision_properties.conn, public_transport_endpoint, personal_transport_endpoint,
+    collect_geom = collect_geometry.CollectGeometry(isochrones_properties.conn, public_transport_endpoint, personal_transport_endpoint,
             walking_endpoint, use_alternative_personal_transport=True, use_alternative_public_transport=True,
-            raise_exceptions=True, download_geometry_after_timeout=True, cities_codes={'Санкт-Петербург': 'Saint-Petersburg'})
+            raise_exceptions=True, download_geometry_after_timeout=True, walking_endpoint_allow_multiple_times=True)
 
     if debug:
         app.run(host='0.0.0.0', port=port, debug=debug)
