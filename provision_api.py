@@ -715,7 +715,7 @@ def list_city_hierarchy() -> Response:
 @logged
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2022-04-14',
+        'version': '2022-05-30',
         '_links': {
             'self': {
                 'href': request.full_path
@@ -1569,7 +1569,7 @@ def any_error(error: Exception):
         help='postgres host address for the provision (transport isochrones) database')
 @click.option('-pP', '--provision_db_port', envvar='PROVISION_DB_PORT', type=int, default=5432,
         help='postgres port number for the provision (transport isochrones) database')
-@click.option('-pD', '--provision_db_name', envvar='PROVISION_DB_NAME', default='city_db_final',
+@click.option('-pD', '--provision_db_name', envvar='PROVISION_DB_NAME', default='provision',
         help='postgres database name for the provision (transport isochrones) database')
 @click.option('-pU', '--provision_db_user', envvar='PROVISION_DB_USER', default='postgres',
         help='postgres user name for the provision (transport isochrones) database')
@@ -1724,6 +1724,26 @@ def main(port: int, houses_db_addr: str, houses_db_port: int, houses_db_name: st
                     res.headers['Content-Type'] = 'text/plain; charset=utf-8'
                     res.headers['Content-Disposition'] = f'filename=provision_api_{time.strftime("%Y-%d-%m %H.%M.%S")}.log'
                     return res
+
+            @app.route('/api/db/query')
+            @logged
+            def create_query() -> Response:
+                return make_response('<HTML>'
+                    '   <form method=GET action=/api/db>'
+                    '       <textarea cols=150 rows=30 name=query> </textarea>'
+                    '       <br/>'
+                    '       Output format: <select name=format>'
+                    '           <option value=geojson selected>geojson</option>'
+                    '           <option value=json>json</option>'
+                    '           <option value=xlsx>xlsx</option>'
+                    '           <option value=csv>csv</option>'
+                    '       </select>'
+                    '       <br/>'
+                    '       Geometry column: <input type=text name=geometry_column value=geometry>'
+                    '       <br/>'
+                    '       <input type=submit value="Submit query">'
+                    '   </form>'
+                    '</HTML>')
 
         except Exception as ex:
             logger.error(f'db_endpoints were not disabled, but loading failed: {ex}')
