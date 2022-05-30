@@ -54,7 +54,7 @@ class Properties:
     @property
     def conn_string(self) -> str:
         return f'host={self.db_addr} port={self.db_port} dbname={self.db_name}' \
-                f' user={self.db_user} password={self.db_pass} connect_timeout=5'
+                f' user={self.db_user} password={self.db_pass} connect_timeout=5 application_name=provision_api'
 
     @property
     def conn(self) -> 'psycopg2.connection':
