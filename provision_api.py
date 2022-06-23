@@ -1174,8 +1174,7 @@ def provision_v3_house(house_id: int) -> Response:
     with houses_properties.conn, houses_properties.conn.cursor() as cur:
         cur.execute('SELECT city FROM houses WHERE functional_object_id = %s', (house_id,))
         city_name = cur.fetchone()
-        if city_name is not None:
-            city_name = city_name[0]
+        city_name = city_name[0] if city_name is not None else default_city
         if social_group:
             if social_group == 'mean':
                 significances = {service_type: needs[needs['service_type'] == service_type]['significance'].mean() for \
@@ -1643,14 +1642,15 @@ def main(port: int, houses_db_addr: str, houses_db_port: int, houses_db_name: st
                 geometry_column: Optional[str] = request.args.get('geometry_column', 'geometry')
                 if format != 'geojson':
                     geometry_column = None
-                df = saver.Query.select(houses_properties.conn, request.args['query'])
+                execute_as_is = request.args.get('execute_as_is', '').lower() in ('t', '1', 'true', 'on')
+                df = saver.Query.select(houses_properties.conn, request.args['query'], execute_as_is)
                 buffer = StringIO() if format != 'xlsx' else BytesIO()
                 saver.Save.to_buffer(df, buffer, format, geometry_column)
                 response = make_response(buffer.getvalue()) # type: ignore
                 response.headers['Content-Type'] = 'application/json' if format in ('json', 'geojson') else \
                         'text/csv' if format == 'csv' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if format == 'xlsx' \
                         else 'application/octet-stream'
-                response.headers['Content-Disposition'] = f'filename={time.strftime("%Y-%d-%m %H.%M.%S")}.{format}'
+                response.headers['Content-Disposition'] = f'filename={time.strftime("%Y-%m-%d %H.%M.%S")}.{format}'
                 return response
             
             @app.route('/api/db/<schema>')
@@ -1740,6 +1740,8 @@ def main(port: int, houses_db_addr: str, houses_db_port: int, houses_db_name: st
                     '       </select>'
                     '       <br/>'
                     '       Geometry column: <input type=text name=geometry_column value=geometry>'
+                    '       <br/>'
+                    '       Execute as is (without geometry as geojson try): <input type=checkbox name=execute_as_is>'
                     '       <br/>'
                     '       <input type=submit value="Submit query">'
                     '   </form>'
