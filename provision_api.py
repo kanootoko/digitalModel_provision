@@ -715,7 +715,7 @@ def list_city_hierarchy() -> Response:
 @logged
 def api_help() -> Response:
     return make_response(jsonify({
-        'version': '2022-05-30',
+        'version': '2022-06-23',
         '_links': {
             'self': {
                 'href': request.full_path
